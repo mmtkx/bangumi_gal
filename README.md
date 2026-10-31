@@ -12,14 +12,20 @@
 - **播放**：支持外部播放器（PotPlayer / VLC / mpv / MPC），未配置时走系统默认关联程序；断点续播
 - **进度**：按集记录观看进度，本地保存并与 Bangumi 双向同步（冲突可批量裁决）
 - **分类**：想看 / 在看 / 看过 / 搁置 / 抛弃，动画与游戏措辞分开（想看 vs 想玩）
-- **插件**：UI 插件（Blob 挂载）与能力插件（wasmtime 沙箱）两种
+- **插件**：支持 UI 插件与 WASM 能力插件
+
+## 安装
+
+到 [Releases](https://github.com/mmtkx/bangumi_gal/releases) 下载最新的 `LAGM_x.y.z_x64-setup.exe`，双击安装即可。
+
+系统需 Windows 10 / 11 并具备 WebView2（Win11 自带，Win10 多数已预装；缺失时[手动安装](https://developer.microsoft.com/microsoft-edge/webview2/)）。
 
 ## 环境要求
 
 | 依赖 | 版本 | 说明 |
 |---|---|---|
 | Windows | 10 / 11 | 仅支持 Windows |
-| WebView2 | 系统自带或[手动安装](https://developer.microsoft.com/microsoft-edge/webview2/) | Tauri 运行必需 |
+| WebView2 | 系统自带或手动安装 | Tauri 运行必需 |
 | Rust | 1.95+ | `rustup` 安装 |
 | Node.js | 20+ | 建议 22 |
 | pnpm | 9+ | `npm i -g pnpm` |
@@ -51,28 +57,25 @@ pnpm build
 ## 打包
 
 ```powershell
-# 构建 NSIS 安装包
+# 对外分发必须带路径脱敏，否则 exe 里会写进编译机的用户名与仓库路径（本机自用可省掉这一行）
+$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=cargo --remap-path-prefix=$PWD=repo"
 pnpm tauri build
 ```
 
-产物：`target/release/bundle/nsis/LAGM_x.y.z_x64-setup.exe`
+产物：`target/release/bundle/nsis/LAGM_x.y.z_x64-setup.exe`。
+
+构建完清掉 `RUSTFLAGS`（`Remove-Item Env:RUSTFLAGS`）：它参与编译指纹，留着会让后续 `cargo` 全量重建。
 
 ## 数据存放位置
 
 | 内容 | 路径 |
 |---|---|
 | 条目库、设置 | `%APPDATA%\com.lagm.desktop\library.db` |
-| 日志 | `%LOCALAPPDATA%\LAGM\logs`（滚动，单文件 5 MiB × 10） |
+| 日志 | `%LOCALAPPDATA%\LAGM\logs`（滚动保存） |
 | 封面缓存 | 设置页可配置，默认在用户缓存目录 |
 | Bangumi token | Windows 凭据管理器（不落明文文件） |
 
 软件只读媒体文件；「删除资源」是需要二次确认的显式操作，默认移入回收站。
-
-## 关于内置 Bangumi 凭据
-
-本项目以 OAuth 公共客户端形式内置自己的 `client_id` / `client_secret`，因此**这组凭据应当视为公开信息**（任何拿到安装包的人都能从二进制里提取）——这是 OAuth 公共客户端的常态，不构成漏洞。
-
-真正需要保密的是用户的 access token / refresh token，它们只存于各人本机的凭据管理器，不会随安装包分发。
 
 ## 第三方数据
 
@@ -84,6 +87,8 @@ pnpm tauri build
 ## 许可
 
 代码以 [MIT](LICENSE) 许可发布；第三方数据文件的许可见上节。
+
+内置 Bangumi 应用凭据的性质（属公开信息、不构成漏洞）与安全范围，见 [SECURITY.md](SECURITY.md)。
 
 ## 免责声明
 
