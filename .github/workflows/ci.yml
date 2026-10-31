@@ -41,6 +41,23 @@ jobs:
           # 缓存键带上 manifest 变更，避免依赖变化后复用陈旧产物。
           workspaces: "."
 
-      # 与本地收尾完全同一条命令：fmt --check + clippy -D warnings + test + 前端检查。
-      - name: 收尾验证
-        run: pwsh -File scripts/verify.ps1 -Frontend
+      - name: Rust 格式检查
+        run: cargo fmt --all -- --check
+
+      - name: Rust Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust 测试
+        run: cargo test --workspace
+
+      - name: 前端格式检查
+        run: pnpm format:check
+
+      - name: 前端类型检查
+        run: pnpm typecheck
+
+      - name: 前端 lint
+        run: pnpm lint
+
+      - name: 前端构建
+        run: pnpm build

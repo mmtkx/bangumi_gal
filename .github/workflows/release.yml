@@ -33,7 +33,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # 与本地 scripts/build-release.ps1 等价：抹掉构建机路径再打包，
+      # 抹掉构建机路径再打包，
       # 否则 exe 里会带 C:\Users\<runner> 这类路径。
       - uses: tauri-apps/tauri-action@v0
         env:

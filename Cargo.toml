@@ -67,8 +67,7 @@ wasmtime = { version = "48", default-features = false, features = ["std", "crane
 incremental = false
 
 # 发行版：去掉符号表（体积从 33MB 降到 15MB 量级），
-# 并配合 scripts/build-release.ps1 的 --remap-path-prefix 抹掉编译机路径，
+# 并配合发布构建时的 --remap-path-prefix 抹掉编译机路径，
 # 避免把本机用户名与目录结构带进分发给别人的 exe。
 [profile.release]
 strip = true
-

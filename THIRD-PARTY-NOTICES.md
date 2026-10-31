@@ -11,7 +11,7 @@
 - 来源：anime-offline-database（manami-project）
   <https://github.com/manami-project/anime-offline-database>
 - 数据快照：`lastUpdate = 2026-07-04`，41,537 条目（压缩后 93,105 条罗马音映射）。
-- 生成方式：`node scripts/build-title-table.mjs`，只做「抽取标题与同义词、
+- 生成方式：项目维护脚本只做「抽取标题与同义词、
   按脚本筛选日文名、归一化后去重」，未修改原始语义。
 - 许可证：**Open Data Commons Open Database License (ODbL) v1.0**
   \+ Database Contents License (DbCL) v1.0
@@ -31,9 +31,9 @@
 # 1. 从 https://github.com/manami-project/anime-offline-database/releases 下载
 #    anime-offline-database-minified.json
 # 2. 重新生成对照表
-node scripts/build-title-table.mjs <下载到的 json 路径>
+运行本地维护脚本，传入下载到的 json 路径
 # 3. 更新本文件里的「数据快照」日期，然后重新构建
-pwsh -File scripts/verify.ps1
+按 README 中的 Rust 和前端检查命令验证
 ```
 
 `titles.tsv` 变化后 build.rs 会自动重编 FST，不需要手动清理 target。

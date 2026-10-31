@@ -38,17 +38,20 @@ pnpm install
 # 3. 开发模式
 pnpm tauri dev
 
-# 4. 收尾验证（fmt + clippy + test + 前端检查，一次跑完）
-pwsh -File scripts/verify.ps1 -Frontend
+# 4. 分别执行 Rust 和前端检查
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+pnpm format:check
+pnpm typecheck
+pnpm lint
+pnpm build
 ```
 
 ## 打包
 
 ```powershell
-# 对外分发：抹掉构建机路径 + strip，并生成 NSIS 安装包
-pwsh -File scripts/build-release.ps1 -Bundled
-
-# 本机自用（允许带构建机路径）
+# 构建 NSIS 安装包
 pnpm tauri build
 ```
 
