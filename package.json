@@ -1,0 +1,15 @@
+{
+  "name": "lagm",
+  "version": "0.0.1",
+  "private": true,
+  "description": "本地动画 / 游戏库管理客户端",
+  "scripts": {
+    "dev": "pnpm --dir apps/desktop dev",
+    "build": "pnpm --dir apps/desktop build",
+    "tauri": "pnpm --dir apps/desktop exec tauri",
+    "lint": "pnpm --dir apps/desktop lint",
+    "typecheck": "pnpm --dir apps/desktop typecheck",
+    "format": "pnpm --dir apps/desktop format",
+    "format:check": "pnpm --dir apps/desktop format:check"
+  }
+}

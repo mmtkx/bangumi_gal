@@ -1,0 +1,16 @@
+[package]
+name = "scanner-anime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "动画文件夹扫描与文件名正则解析"
+
+[dependencies]
+library-core = { workspace = true }
+walkdir = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

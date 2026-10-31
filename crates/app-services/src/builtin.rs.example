@@ -1,0 +1,20 @@
+//! 内置 Bangumi 应用凭据 —— 模板。
+//!
+//! 复制本文件为 `builtin.rs` 并填入你自己的 client_id / client_secret。
+//! `builtin.rs` 已被 .gitignore 排除，避免把真实 secret 提交进版本库。
+//!
+//! 安全前提（务必遵守）：
+//! 1. 回调地址固定为 `http://127.0.0.1:27432/callback`，并保持与 Bangumi 后台一致；
+//! 2. 不要在此处放任何 access/refresh token、账号 ID 或昵称。
+
+const CLIENT_ID: &str = concat!("", "");
+const CLIENT_SECRET: &str = concat!("", "");
+
+pub const REDIRECT_URI: &str = "http://127.0.0.1:27432/callback";
+
+pub fn bangumi_app() -> Option<(&'static str, &'static str)> {
+    if CLIENT_ID.is_empty() || CLIENT_SECRET.is_empty() {
+        return None;
+    }
+    Some((CLIENT_ID, CLIENT_SECRET))
+}

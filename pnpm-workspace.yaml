@@ -1,0 +1,6 @@
+packages:
+  - "apps/desktop"
+
+# pnpm 默认阻止依赖执行安装脚本；esbuild 需要下载并链接其平台二进制。
+allowBuilds:
+  esbuild: true

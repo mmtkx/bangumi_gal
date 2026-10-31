@@ -1,0 +1,30 @@
+[package]
+name = "app-services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "组合根：装配各模块、暴露 Tauri command、桥接事件到前端"
+
+[dependencies]
+library-core = { workspace = true }
+launcher = { workspace = true }
+player-adapter = { workspace = true }
+scanner-anime = { workspace = true }
+scanner-game = { workspace = true }
+bangumi-sync = { workspace = true }
+plugin-host = { workspace = true }
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+trash = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

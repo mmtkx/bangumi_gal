@@ -1,0 +1,18 @@
+[package]
+name = "player-adapter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "PlayerBackend 抽象、外部播放器适配与播放会话进度估算"
+
+[dependencies]
+library-core = { workspace = true }
+sysinfo = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winreg = { workspace = true }

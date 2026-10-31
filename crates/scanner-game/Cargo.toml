@@ -1,0 +1,16 @@
+[package]
+name = "scanner-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "游戏文件夹扫描与可执行文件发现"
+
+[dependencies]
+library-core = { workspace = true }
+walkdir = { workspace = true }
+regex = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

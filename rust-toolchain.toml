@@ -1,0 +1,4 @@
+[toolchain]
+# MSRV 见 Cargo.toml 的 rust-version；这里跟随 stable，避免 pin 死导致 CI 拉不到。
+channel = "stable"
+components = ["rustfmt", "clippy"]

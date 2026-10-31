@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # builtin.rs 不入库（含真实 secret），构建前从模板生成空实现。
+      - name: 生成 builtin.rs 模板
+        shell: pwsh
+        run: Copy-Item crates/app-services/src/builtin.rs.example crates/app-services/src/builtin.rs
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # 缓存键带上 manifest 变更，避免依赖变化后复用陈旧产物。
+          workspaces: "."
+
+      # 与本地收尾完全同一条命令：fmt --check + clippy -D warnings + test + 前端检查。
+      - name: 收尾验证
+        run: pwsh -File scripts/verify.ps1 -Frontend

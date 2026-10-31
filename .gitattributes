@@ -1,0 +1,16 @@
+# 统一换行，避免 Windows 检出后整片显示为改动
+* text=auto eol=lf
+
+# PowerShell 脚本在 Windows 上运行，保持 CRLF
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+
+# 二进制
+*.png binary
+*.ico binary
+*.icns binary
+*.wasm binary
+*.exe binary
+
+# 对照表较大且每次更新整体变化，关掉 diff 免得 PR 页面卡死
+crates/bangumi-sync/data/titles.tsv -diff

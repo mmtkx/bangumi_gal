@@ -1,0 +1,18 @@
+[package]
+name = "lagm-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "LAGM 桌面客户端（Tauri 壳）"
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+app-services = { workspace = true }
+library-core = { workspace = true }
+tauri = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

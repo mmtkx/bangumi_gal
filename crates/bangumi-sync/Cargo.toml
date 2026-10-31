@@ -1,0 +1,33 @@
+[package]
+name = "bangumi-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Bangumi OAuth、API 客户端、推送队列与冲突计算（M3 实现）"
+
+[dependencies]
+library-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+tiny_http = { workspace = true }
+keyring = { workspace = true }
+url = { workspace = true }
+regex = { workspace = true }
+fast2s = { workspace = true }
+fst = { workspace = true }
+
+[build-dependencies]
+fst = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+winreg = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

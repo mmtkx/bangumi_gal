@@ -1,0 +1,19 @@
+[package]
+name = "demo-scanner"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "LAGM 示例能力插件：从动画文件名解析标题与集号"
+
+# 插件是独立产物，不参与主工作区构建（见根 Cargo.toml 的 exclude）。
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

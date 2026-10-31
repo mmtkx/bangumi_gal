@@ -1,0 +1,43 @@
+node_modules/
+dist/
+target/
+*.log
+.DS_Store
+Thumbs.db
+
+# Tauri 生成物
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+
+# 本地运行数据
+*.db
+*.db-wal
+*.db-shm
+
+# 内置 Bangumi 应用凭据（真实 secret，禁止入库）
+crates/app-services/src/builtin.rs
+
+# 本地 Agent 记忆（含个人偏好与本机路径，不公开）
+.workbuddy/
+
+# 分发产物走 GitHub Releases，不入库
+release-package/
+
+# 插件构建产物：仅 demo 的 main.wasm 例外（提交它，让能力插件示例开箱即用）
+# 其他插件若自行构建 wasm，产物自己决定是否入库
+
+
+# macOS 图标：本项目只构建 Windows，省 2 MB
+apps/desktop/src-tauri/icons/icon.icns
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 内部文档：仅供本地开发/审批，不随仓库公开
+push.md
+src.md
+Plan.md
+agent.md
+handoff.md

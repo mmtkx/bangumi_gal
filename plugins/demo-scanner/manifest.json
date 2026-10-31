@@ -1,0 +1,10 @@
+{
+  "id": "com.lagm.demo-scanner",
+  "name": "示例文件名解析器",
+  "version": "0.1.0",
+  "kind": "capability",
+  "apiVersion": "1",
+  "entry": "main.wasm",
+  "capabilities": ["scanner.anime"],
+  "permissions": []
+}

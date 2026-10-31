@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/desktop/src-tauri",
+    "crates/library-core",
+    "crates/scanner-anime",
+    "crates/scanner-game",
+    "crates/launcher",
+    "crates/player-adapter",
+    "crates/bangumi-sync",
+    "crates/plugin-host",
+    "crates/app-services",
+]
+# plugins 下的示例插件是独立的 wasm 产物，不参与主工作区构建。
+exclude = ["plugins"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+rust-version = "1.95"
+
+[workspace.dependencies]
+library-core = { path = "crates/library-core" }
+scanner-anime = { path = "crates/scanner-anime" }
+scanner-game = { path = "crates/scanner-game" }
+launcher = { path = "crates/launcher" }
+player-adapter = { path = "crates/player-adapter" }
+bangumi-sync = { path = "crates/bangumi-sync" }
+plugin-host = { path = "crates/plugin-host" }
+app-services = { path = "crates/app-services" }
+
+tauri = { version = "2.12", features = [] }
+tauri-build = { version = "2.7", features = [] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.41", features = ["bundled"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+walkdir = "2"
+regex = "1"
+sysinfo = "0.40"
+thiserror = "2"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# system-proxy：未显式配置代理时读取 Windows 系统代理（浏览器能开、应用连不上就是缺这个）。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "socks", "system-proxy"] }
+tiny_http = "0.12"
+keyring = { version = "3.6", features = ["windows-native"] }
+url = "2"
+winreg = "0.56"
+fast2s = "0.3"
+# 标题对照表用 FST 存：有序、前缀压缩，查询 O(len) 且运行时零解析。
+fst = "0.4"
+trash = "5.2"
+# 导入压缩包只需要 deflate，关掉 bzip2/zstd/time 可省一大截依赖体积。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+wasmtime = { version = "48", default-features = false, features = ["std", "cranelift", "runtime", "wat"] }
+
+# 关闭 dev/test 档的增量编译。
+# 原因：incremental 每轮都会新建 session 目录并删除上一轮，在 target/ 下反复写删
+# 大量小文件；本项目单 crate 全量重编只要几秒，收益低于磁盘与删除开销。
+# 注：release 档默认就不是增量，无需重复声明；test 档继承 dev。
+[profile.dev]
+incremental = false
+
+# 发行版：去掉符号表（体积从 33MB 降到 15MB 量级），
+# 并配合 scripts/build-release.ps1 的 --remap-path-prefix 抹掉编译机路径，
+# 避免把本机用户名与目录结构带进分发给别人的 exe。
+[profile.release]
+strip = true
+

@@ -1,0 +1,11 @@
+{
+  "id": "com.lagm.demo-panel",
+  "name": "示例面板",
+  "version": "0.1.0",
+  "kind": "ui",
+  "apiVersion": "1",
+  "entry": "main.js",
+  "capabilities": [],
+  "permissions": ["read:library"],
+  "mount": "library.item.detail.panel"
+}

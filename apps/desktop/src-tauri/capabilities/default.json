@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "M1 默认能力：仅开放核心事件与窗口能力，未引入任何插件权限",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
