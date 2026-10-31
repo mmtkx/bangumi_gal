@@ -3413,8 +3413,8 @@ mod tests {
 
         let status = services.bangumi_status().expect("status");
         assert!(!status.authorized);
-        // 内置应用：未做任何配置也已有可用凭据。
-        assert!(status.has_credentials);
+        // 内置应用：未做任何配置也已有可用凭据；非内置时初始应为未配置。
+        assert_eq!(status.has_credentials, status.using_builtin_app);
 
         let saved_input = BangumiConfigInput {
             client_id: "bgmabc".into(),

@@ -188,6 +188,8 @@ impl SettingsService {
             return self.save_bangumi_proxy(proxy);
         }
 
+        validate_proxy(proxy)?;
+
         if client_id.is_empty() && client_secret.is_empty() && redirect_uri.is_empty() {
             self.store.remove(keys::BANGUMI_CLIENT_ID)?;
             self.store.remove(keys::BANGUMI_CLIENT_SECRET)?;
@@ -219,8 +221,6 @@ impl SettingsService {
                 "回调地址必须显式指定端口（如 27432）".to_owned(),
             ));
         }
-        validate_proxy(proxy)?;
-
         self.store.set(keys::BANGUMI_CLIENT_ID, client_id)?;
         self.store.set(
             keys::BANGUMI_CLIENT_SECRET,
