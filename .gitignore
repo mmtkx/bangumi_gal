@@ -29,7 +29,6 @@ scripts/
 # 插件构建产物：仅 demo 的 main.wasm 例外（提交它，让能力插件示例开箱即用）
 # 其他插件若自行构建 wasm，产物自己决定是否入库
 
-
 # macOS 图标：本项目只构建 Windows，省 2 MB
 apps/desktop/src-tauri/icons/icon.icns
 
