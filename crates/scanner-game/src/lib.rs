@@ -146,6 +146,7 @@ impl GameScanner {
                 size_bytes: file.size_bytes,
                 episode: None,
                 group: None,
+                special: false,
             })
             .collect();
 

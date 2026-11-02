@@ -13,6 +13,8 @@ pub struct TitleParser {
     bracket: Regex,
     season_marks: Regex,
     season_cn: Regex,
+    season_latin: Regex,
+    season_cn_numbered: Regex,
     junk: Regex,
     year: Regex,
     separators: Regex,
@@ -28,6 +30,11 @@ impl TitleParser {
                 r"(?i)(?:^|[\s._\-])(?:s|season)\s*\d{1,2}(?:\s*e\s*\d{1,4})?(?:[\s._\-]|$)",
             )?,
             season_cn: build(r"第\s*[一二三四五六七八九十百零两\d]{1,3}\s*[季期部]")?,
+            // 带捕获组的同款规则：清理标题用的是不带组的版本，这里只为拿季号。
+            season_latin: build(
+                r"(?i)(?:^|[\s._\-\[\(【])(?:s|season)\s*0?(\d{1,2})(?:[\s._\-e\]\)】]|$)",
+            )?,
+            season_cn_numbered: build(r"第\s*([一二三四五六七八九十百零两\d]{1,3})\s*[季期部]")?,
             junk: build(
                 r"(?i)(?:\b(?:1080p|720p|2160p|480p|4k|8k|8bit|10bit|hi10p|hevc|avc|x264|x265|h264|h265|av1|vp9|aac|flac|opus|ac3|eac3|dts|bdrip|bluray|bd|web-?dl|webrip|hdtv|dvdrip|remux|hdr10|hdr|sdr|chs|cht|gb|big5|jpn|eng|dual|multi|sub|mkv|mp4|avi)\b|简繁|简体|繁体|中字|内嵌|外挂|字幕|合集|无修|完结|招募|生肉|熟肉|[★☆♪])",
             )?,
@@ -90,6 +97,63 @@ impl TitleParser {
         }
         None
     }
+
+    /// 从文本里解析季号（`S02E05`、`Season 2`、`第二季`）。解析不到返回 None。
+    pub fn parse_season(&self, text: &str) -> Option<u32> {
+        if let Some(captures) = self.season_latin.captures(text) {
+            if let Some(value) = captures
+                .get(1)
+                .and_then(|raw| raw.as_str().parse::<u32>().ok())
+                .filter(|value| (1..=99).contains(value))
+            {
+                return Some(value);
+            }
+        }
+        let captures = self.season_cn_numbered.captures(text)?;
+        parse_cn_number(captures.get(1)?.as_str()).filter(|value| (1..=99).contains(value))
+    }
+
+    /// 相对路径里的季号：文件名优先，其次从最深的目录往上找。
+    ///
+    /// `Show/Season 2/05.mkv` 的季号只在目录上，`Show/S02E05.mkv` 只在文件名上，
+    /// 所以必须两层都看；文件名更具体，优先采信。
+    pub fn parse_season_in_path(&self, relative: &str) -> Option<u32> {
+        let mut parts: Vec<&str> = relative.split('/').collect();
+        let file_name = parts.pop()?;
+        if let Some(season) = self.parse_season(file_name) {
+            return Some(season);
+        }
+        parts.iter().rev().find_map(|part| self.parse_season(part))
+    }
+}
+
+/// 把「一 / 十二 / 二十三」这类不超过两位的中文数字转成数值。
+fn parse_cn_number(text: &str) -> Option<u32> {
+    if let Ok(value) = text.parse::<u32>() {
+        return Some(value);
+    }
+    let mut total = 0_u32;
+    let mut pending = 0_u32;
+    for ch in text.chars() {
+        match ch {
+            '零' => pending = 0,
+            '一' => pending = 1,
+            '二' | '两' => pending = 2,
+            '三' => pending = 3,
+            '四' => pending = 4,
+            '五' => pending = 5,
+            '六' => pending = 6,
+            '七' => pending = 7,
+            '八' => pending = 8,
+            '九' => pending = 9,
+            '十' => {
+                total += if pending == 0 { 10 } else { pending * 10 };
+                pending = 0;
+            }
+            _ => return None,
+        }
+    }
+    Some(total + pending)
 }
 
 fn collapse_whitespace(text: &str) -> String {
@@ -191,6 +255,20 @@ mod tests {
         for (name, expected) in cases {
             assert_eq!(parser.parse_episode(name), expected, "{name}");
         }
+    }
+
+    #[test]
+    fn parses_season_from_name_and_directory() {
+        let parser = parser();
+        assert_eq!(parser.parse_season("Show S02E05.mkv"), Some(2));
+        assert_eq!(parser.parse_season("Show Season 3 - 01.mkv"), Some(3));
+        assert_eq!(parser.parse_season("进击的巨人 第三季"), Some(3));
+        assert_eq!(parser.parse_season("Show 第十二季"), Some(12));
+        assert_eq!(parser.parse_season("Show 01.mkv"), None);
+        // 季号也可能只出现在目录上。
+        assert_eq!(parser.parse_season_in_path("Show/Season 2/05.mkv"), Some(2));
+        assert_eq!(parser.parse_season_in_path("Show/S02E05.mkv"), Some(2));
+        assert_eq!(parser.parse_season_in_path("Show/05.mkv"), None);
     }
 
     #[test]

@@ -290,7 +290,7 @@ impl AnimeScanner {
             }
         }
 
-        let mut files: Vec<MediaFile> = collected
+        let entries: Vec<(MediaFile, Option<u32>)> = collected
             .into_iter()
             .take(MAX_PROBE_FILES)
             .map(|file| {
@@ -304,24 +304,45 @@ impl AnimeScanner {
                     .relative
                     .rfind('/')
                     .map(|index| file.relative[..index].to_string());
-                MediaFile {
-                    episode: self.parser.parse_episode(&bare_name),
+                let special = media::is_special_path(&file.relative);
+                // 附属内容自成一块编号，季号对它没有意义。
+                let season = if special {
+                    None
+                } else {
+                    self.parser.parse_season_in_path(&file.relative)
+                };
+                let media_file = MediaFile {
+                    // 附属目录的文件名常自带编号（`SP 01`、`NCOP 02`），采信会与正片撞号，
+                    // 交给下面的顺延编号统一处理。
+                    episode: if special {
+                        None
+                    } else {
+                        self.parser.parse_episode(&bare_name)
+                    },
                     name: file.relative,
                     size_bytes: file.size_bytes,
                     group,
-                }
+                    special,
+                };
+                (media_file, season)
             })
             .collect();
+        let (mut files, seasons): (Vec<MediaFile>, Vec<Option<u32>>) = entries.into_iter().unzip();
 
-        // 直属文件排前，其次按来源目录分组，组内按集号与文件名；详情页据此分组展示。
+        // 多季合并成一个条目时，先把各季集号挪到互不重叠的区间，否则 S01E05 与 S02E05 会写同一行进度。
+        apply_season_offsets(&mut files, &seasons);
+
+        // 正片整块在前（按来源分组、组内按集号），附属内容整块在后（按来源分组、组内按文件名自然序）。
+        // 顺序即顺延编号的顺序，因此附属文件永远拿不到正片的集号。
         normalize_groups(&mut files);
         files.sort_by(|left, right| {
-            left.group
-                .is_some()
-                .cmp(&right.group.is_some())
+            left.special
+                .cmp(&right.special)
+                .then_with(|| left.group.is_some().cmp(&right.group.is_some()))
                 .then_with(|| left.group.cmp(&right.group))
+                .then_with(|| left.episode.is_none().cmp(&right.episode.is_none()))
                 .then_with(|| left.episode.cmp(&right.episode))
-                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| media::natural_cmp(&left.name, &right.name))
         });
 
         // 集号摘要只统计解析出来的集号，避免顺延编号把 SP 算成正片。
@@ -385,7 +406,56 @@ fn normalize_groups(files: &mut [MediaFile]) {
     }
 }
 
-/// 给没有解析出集号的文件顺延编号，保证一次探测内集号唯一。
+/// 多季合并到一个条目时，按季把集号挪到互不重叠的区间。
+///
+/// 偏移量取「前面各季已出现的最大集号之和」：分季目录里的集号通常是完整的 1..N，
+/// 所以第一季 12 集时第二季从 13 起。判据只有文件名/目录名里的季标记，
+/// 拿不到季信息时（`seasons` 全为 None 或只有一季）不做任何改动。
+///
+/// 为什么不能只靠「同号去重」：`S01E05` 与 `S02E05` 谁是第 5 集没有正确答案，
+/// 去重只能按文件名排序猜；而分季的集号本身是可靠的，按季偏移才不会被猜错。
+fn apply_season_offsets(files: &mut [MediaFile], seasons: &[Option<u32>]) {
+    let mut max_by_season: BTreeMap<u32, u32> = BTreeMap::new();
+    for (file, season) in files.iter().zip(seasons.iter()) {
+        if file.special {
+            continue;
+        }
+        let Some(episode) = file.episode else {
+            continue;
+        };
+        // 没有季标记的文件归入第 1 季：`Show/01.mkv` 与 `Show/Season 2/01.mkv` 这种混排很常见。
+        let slot = max_by_season.entry(season.unwrap_or(1)).or_insert(0);
+        *slot = (*slot).max(episode);
+    }
+    if max_by_season.len() < 2 {
+        return;
+    }
+
+    let mut offsets: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut offset = 0_u32;
+    for (season, max_episode) in &max_by_season {
+        offsets.insert(*season, offset);
+        offset = offset.saturating_add(*max_episode);
+    }
+
+    for (file, season) in files.iter_mut().zip(seasons.iter()) {
+        if file.special {
+            continue;
+        }
+        let Some(episode) = file.episode else {
+            continue;
+        };
+        let Some(offset) = offsets.get(&season.unwrap_or(1)) else {
+            continue;
+        };
+        file.episode = Some(episode.saturating_add(*offset));
+    }
+}
+
+/// 给没有集号的文件顺延编号，保证一次探测内集号唯一。
+///
+/// 调用前文件已按「正片在前、附属内容在后」排好，因此正片里解析不出集号的
+/// 紧接正片最大集号，附属内容再往后排，两块编号不会互相侵占。
 fn fill_missing_episodes(files: &mut [MediaFile]) {
     let max_parsed = files
         .iter()
@@ -720,6 +790,88 @@ mod tests {
         let probe = scanner.probe(&show, None).expect("probe");
         assert_eq!(probe.file_count, 2);
         assert_eq!(probe.episode_hint.as_deref(), Some("E01–E02"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_places_unparsed_files_after_episodes() {
+        let root = temp_root("probe-unparsed");
+        let show = root.join("Show");
+        touch(&show, "Show - 02.mkv");
+        touch(&show, "Show - 01.mkv");
+        touch(&show, "Show - Preview.mkv");
+        touch(&show, "Show - Menu.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let probe = scanner.probe(&show, None).expect("probe");
+        let names: Vec<&str> = probe.files.iter().map(|file| file.name.as_str()).collect();
+        // 无集号的文件必须排在正片之后，且彼此按文件名自然序；集号顺延到最大集号之后。
+        assert_eq!(
+            names,
+            [
+                "Show - 01.mkv",
+                "Show - 02.mkv",
+                "Show - Menu.mkv",
+                "Show - Preview.mkv"
+            ]
+        );
+        let episodes: Vec<Option<u32>> = probe.files.iter().map(|file| file.episode).collect();
+        assert_eq!(episodes, [Some(1), Some(2), Some(3), Some(4)]);
+        assert_eq!(probe.episode_hint.as_deref(), Some("E01–E02"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_numbers_specials_after_main_episodes() {
+        let root = temp_root("probe-specials");
+        let show = root.join("Show");
+        touch(&show.join("Season 1"), "Show S01E01.mkv");
+        touch(&show.join("Season 1"), "Show S01E02.mkv");
+        touch(&show.join("Extras"), "Show 01.mkv");
+        touch(&show.join("Extras"), "Show 02.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let probe = scanner.probe(&show, None).expect("probe");
+
+        // Extras 字典序在 Season 1 之前，但附属内容必须整块排在正片之后。
+        let names: Vec<&str> = probe.files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Season 1/Show S01E01.mkv",
+                "Season 1/Show S01E02.mkv",
+                "Extras/Show 01.mkv",
+                "Extras/Show 02.mkv"
+            ]
+        );
+        // Extras 里的 01/02 若采信文件名就会与正片 1/2 撞号，这里必须顺延成 3/4。
+        let episodes: Vec<Option<u32>> = probe.files.iter().map(|file| file.episode).collect();
+        assert_eq!(episodes, [Some(1), Some(2), Some(3), Some(4)]);
+        let specials: Vec<bool> = probe.files.iter().map(|file| file.special).collect();
+        assert_eq!(specials, [false, false, true, true]);
+        assert_eq!(probe.episode_hint.as_deref(), Some("E01–E02"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_offsets_episodes_across_seasons() {
+        let root = temp_root("probe-seasons");
+        let show = root.join("Show");
+        touch(&show.join("Season 1"), "Show S01E01.mkv");
+        touch(&show.join("Season 1"), "Show S01E02.mkv");
+        touch(&show.join("Season 2"), "Show S02E01.mkv");
+        touch(&show.join("Season 2"), "Show S02E02.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let probe = scanner.probe(&show, None).expect("probe");
+
+        // 两季合并成一个条目时，第二季必须从第 3 集起，否则 S01E05 与 S02E05 会共用一行进度。
+        let episodes: Vec<Option<u32>> = probe.files.iter().map(|file| file.episode).collect();
+        assert_eq!(episodes, [Some(1), Some(2), Some(3), Some(4)]);
+        assert_eq!(probe.episode_hint.as_deref(), Some("E01–E04"));
 
         fs::remove_dir_all(root).ok();
     }

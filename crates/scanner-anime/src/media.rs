@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::path::Path;
 
 use library_core::{CoreError, Result};
@@ -117,13 +118,27 @@ pub fn direct_video_stems(dir: &Path) -> Result<Vec<String>> {
 
 /// 是否是附属内容目录（SPs / 特典 / NCOP 等）。
 pub fn is_container_dir(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(is_container_name)
+        .unwrap_or(false)
+}
+
+fn is_container_name(name: &str) -> bool {
     let normalized = normalize_dir_name(name);
     CONTAINER_DIR_NAMES
         .iter()
         .any(|candidate| *candidate == normalized)
+}
+
+/// 相对路径是否位于附属内容目录之下（`SPs/01.mkv`、`特典/NCOP 2.mkv`）。
+///
+/// 只看目录层，最后一层是文件名。附属目录里的文件名常带自己的编号
+/// （`SP 01`、`NCOP 02`），与正片集号撞车后会把进度写坏，因此这些文件不采信解析结果。
+pub fn is_special_path(relative: &str) -> bool {
+    let mut parts: Vec<&str> = relative.split('/').collect();
+    parts.pop();
+    parts.iter().any(|part| is_container_name(part))
 }
 
 /// 跳过隐藏目录与系统目录，避免扫描回收站、卷信息目录。
@@ -214,6 +229,87 @@ pub fn collect_videos_recursive(dir: &Path, max_depth: usize) -> Result<Vec<Rela
     Ok(files)
 }
 
+/// 自然排序：数字段按数值比较，文本段按不区分大小写比较。
+///
+/// 解析不出集号的文件（菜单、NCOP、SP 等）要靠文件名决定先后，
+/// 字典序会把 `SP 10` 排在 `SP 2` 前面，与用户预期相反。
+pub fn natural_cmp(left: &str, right: &str) -> Ordering {
+    let left_tokens = tokenize(left);
+    let right_tokens = tokenize(right);
+    for (left_token, right_token) in left_tokens.iter().zip(right_tokens.iter()) {
+        let order = match (left_token, right_token) {
+            (Token::Num(left_num), Token::Num(right_num)) => compare_digits(left_num, right_num),
+            _ => text_cmp(left_token.text(), right_token.text()),
+        };
+        if order != Ordering::Equal {
+            return order;
+        }
+    }
+    left_tokens
+        .len()
+        .cmp(&right_tokens.len())
+        .then_with(|| left.cmp(right))
+}
+
+enum Token<'a> {
+    Num(&'a str),
+    Text(&'a str),
+}
+
+impl Token<'_> {
+    fn text(&self) -> &str {
+        match self {
+            Token::Num(text) | Token::Text(text) => text,
+        }
+    }
+}
+
+/// 只按 ASCII 数字切段：多字节字符的每个字节都 >= 0x80，不会被当成数字，
+/// 因此切点一定落在字符边界上，可以直接按字节切片。
+fn tokenize(text: &str) -> Vec<Token<'_>> {
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    while start < bytes.len() {
+        let digits = bytes[start].is_ascii_digit();
+        let mut end = start + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() == digits {
+            end += 1;
+        }
+        let slice = &text[start..end];
+        tokens.push(if digits {
+            Token::Num(slice)
+        } else {
+            Token::Text(slice)
+        });
+        start = end;
+    }
+    tokens
+}
+
+/// 按数值比较两段数字，先去掉前导零再比长度，避免大数溢出。
+fn compare_digits(left: &str, right: &str) -> Ordering {
+    let left = left.trim_start_matches('0');
+    let right = right.trim_start_matches('0');
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+fn text_cmp(left: &str, right: &str) -> Ordering {
+    let mut left_chars = left.chars().flat_map(char::to_lowercase);
+    let mut right_chars = right.chars().flat_map(char::to_lowercase);
+    loop {
+        match (left_chars.next(), right_chars.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(left_char), Some(right_char)) => match left_char.cmp(&right_char) {
+                Ordering::Equal => {}
+                other => return other,
+            },
+        }
+    }
+}
+
 /// 集号摘要，例如 `E01–E12`。非连续时退化为集数。
 pub fn episode_hint(episodes: &[Option<u32>]) -> Option<String> {
     let mut numbers: Vec<u32> = episodes.iter().flatten().copied().collect();
@@ -261,6 +357,27 @@ mod tests {
         assert!(should_skip_dir(Path::new("D:/anime/$RECYCLE.BIN")));
         assert!(should_skip_dir(Path::new("D:/anime/.hidden")));
         assert!(!should_skip_dir(Path::new("D:/anime/Show")));
+    }
+
+    #[test]
+    fn natural_order_compares_digit_runs_by_value() {
+        let mut names = ["SP 10.mkv", "SP 2.mkv", "SP 1.mkv"];
+        names.sort_by(|left, right| natural_cmp(left, right));
+        assert_eq!(names, ["SP 1.mkv", "SP 2.mkv", "SP 10.mkv"]);
+
+        assert_eq!(natural_cmp("Show A", "Show a"), Ordering::Less);
+        assert_eq!(natural_cmp("Show 007", "Show 7"), Ordering::Less);
+        assert_eq!(natural_cmp("特典 1", "特典 2"), Ordering::Less);
+    }
+
+    #[test]
+    fn special_paths_are_detected_by_directory() {
+        for path in ["SPs/01.mkv", "特典/NCOP 2.mkv", "Season 1/Extras/a.mkv"] {
+            assert!(is_special_path(path), "{path}");
+        }
+        for path in ["01.mkv", "Season 1/01.mkv", "SP.mkv"] {
+            assert!(!is_special_path(path), "{path}");
+        }
     }
 
     #[test]
