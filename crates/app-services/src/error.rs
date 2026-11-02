@@ -38,6 +38,9 @@ pub enum AppError {
 
     #[error("内部错误：{0}")]
     Internal(String),
+
+    #[error("检查更新失败：{0}")]
+    Update(String),
 }
 
 impl AppError {
@@ -52,6 +55,7 @@ impl AppError {
             Self::Validation(_) => "validation_error",
             Self::Scan(_) => "scan_error",
             Self::Internal(_) => "internal_error",
+            Self::Update(_) => "update_error",
         }
     }
 }

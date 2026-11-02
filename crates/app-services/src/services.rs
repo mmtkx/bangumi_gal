@@ -39,7 +39,7 @@ use crate::dto::{
     MediaSummaryDto, MetadataCacheDto, PluginDto, PluginEntryDto, PluginInvocationDto,
     PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto, PullReportDto, PushReportDto,
     ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto, SubjectSearchHitDto,
-    SyncQueueDto, SyncStatsDto,
+    SyncQueueDto, SyncStatsDto, UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
 use crate::settings::{
@@ -871,6 +871,25 @@ impl Services {
         })
     }
 
+    /// 该集号对应的是否是附属内容（SPs / 特典 / NCOP 等）。
+    ///
+    /// 附属内容的集号是本地顺延出来的，Bangumi 上没有对应剧集；推上去只会换来一条
+    /// 永远「找不到第 N 集」的失败记录，还会在同步页常驻。
+    /// 探测失败时按正片处理：目录暂时读不到，不该成为丢掉真实进度的理由。
+    fn is_special_episode(&self, item: &LibraryItem, episode: u32) -> bool {
+        let folder = PathBuf::from(&item.folder_path);
+        match self.anime.probe(&folder, item.file_filter.as_deref()) {
+            Ok(probe) => probe
+                .files
+                .iter()
+                .any(|file| file.episode == Some(episode) && file.special),
+            Err(err) => {
+                tracing::warn!(item = %item.id, error = %err, "探测附属内容失败，按正片处理");
+                false
+            }
+        }
+    }
+
     /// 若条目已绑定 Bangumi，则把单集进度写入推送队列。未绑定直接跳过。
     fn enqueue_progress(&self, item_id: &str, episode: u32, watched_seconds: u64) -> ApiResult<()> {
         let Some(item) = self.repo.get_item(item_id)? else {
@@ -879,6 +898,11 @@ impl Services {
         let Some(subject_id) = item.bangumi_subject_id else {
             return Ok(());
         };
+        // 放在绑定判断之后：未绑定条目本来就不同步，没必要为它去探测目录。
+        if item.kind == ItemKind::Anime && self.is_special_episode(&item, episode) {
+            tracing::debug!(item = %item.id, episode, "附属内容不参与云端同步");
+            return Ok(());
+        }
         let payload = ProgressPayload {
             item_id: item.id.clone(),
             subject_id,
@@ -2252,6 +2276,11 @@ impl Services {
         })
     }
 
+    /// 检查是否有新版本。只读 GitHub Release，不下载、不安装。
+    pub async fn check_update(&self, current_version: &str) -> ApiResult<UpdateCheckDto> {
+        crate::update::check(current_version, self.config_provider.proxy().as_deref()).await
+    }
+
     /// 用系统默认浏览器打开 http(s) 链接。
     pub fn open_external(&self, url: &str) -> ApiResult<()> {
         let trimmed = url.trim();
@@ -3053,6 +3082,38 @@ mod tests {
         assert_eq!(queue.len(), 1, "手动校正应入队");
         assert_eq!(queue[0].op, "progress");
         assert_eq!(queue[0].item_id.as_deref(), Some(id.as_str()));
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
+    async fn special_episodes_are_not_enqueued() {
+        let base = temp_root("sync-special");
+        let client = Arc::new(OfflineClient::new(true));
+        let services = services_with_client(&base, client);
+        let (show, id) = anime_item(&services, &base);
+        // 附属目录里的 01 与正片撞号，扫描时被顺延成第 3 集。
+        let sps = show.join("SPs");
+        fs::create_dir_all(&sps).expect("sps");
+        fs::write(sps.join("Test Show 01.mkv"), b"x").expect("sp file");
+
+        services
+            .bind_bangumi_subject(&id, Some(400602))
+            .expect("bind");
+        services
+            .set_progress(&id, 3, 600)
+            .expect("special progress");
+        assert!(
+            services.list_sync_queue().expect("queue").is_empty(),
+            "附属内容在云端没有对应剧集，不得入队"
+        );
+
+        services.set_progress(&id, 1, 600).expect("progress");
+        assert_eq!(
+            services.list_sync_queue().expect("queue").len(),
+            1,
+            "正片进度仍要入队"
+        );
 
         fs::remove_dir_all(base).ok();
     }

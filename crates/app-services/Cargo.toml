@@ -25,6 +25,9 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 trash = { workspace = true }
 zip = { workspace = true }
+# 检查更新要访问 GitHub Releases；选它而不是另加 HTTP 库，是因为树里已有 reqwest，
+# 且工作区配置已开启 system-proxy（与 Bangumi 同步共用同一套代理行为）。
+reqwest = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

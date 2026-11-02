@@ -1,8 +1,16 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useCallback, useEffect, useState } from 'react';
 
-import { bangumiAccount, importDrop, playNextEpisode, subscribeAppEvents, uiReady } from './api';
-import type { AccountInfo } from './api';
+import {
+  bangumiAccount,
+  checkUpdate,
+  importDrop,
+  openExternal,
+  playNextEpisode,
+  subscribeAppEvents,
+  uiReady,
+} from './api';
+import type { AccountInfo, UpdateCheck } from './api';
 import IssueBanner from './components/IssueBanner';
 import AccountPage from './pages/AccountPage';
 import ItemDetailPage from './pages/ItemDetailPage';
@@ -29,6 +37,22 @@ export default function App() {
   const [account, setAccount] = useState<AccountInfo | null>(null);
   // 头像加载失败（外链被 CSP 拦或图片 404）时退回字母块，避免出现破图。
   const [avatarFailed, setAvatarFailed] = useState(false);
+  // 启动时的静默检查结果：只在真有新版时用一条顶栏提示呈现，不弹窗。
+  const [updateNotice, setUpdateNotice] = useState<UpdateCheck | null>(null);
+
+  // 启动后延迟检查更新：开发构建（vite dev）里本地版本必然落后，提示只会是噪音，故跳过。
+  useEffect(() => {
+    if (!import.meta.env.PROD) return;
+    const timer = window.setTimeout(() => {
+      checkUpdate()
+        .then((result) => {
+          if (result.hasUpdate) setUpdateNotice(result);
+        })
+        // 启动检查失败不打扰用户；设置页里手动检查会给出具体原因。
+        .catch(() => undefined);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const bumpLibrary = useCallback(() => setLibraryVersion((value) => value + 1), []);
 
@@ -236,6 +260,29 @@ export default function App() {
       </aside>
 
       <main className="main">
+        {updateNotice && (
+          <div className="banner banner-warn update-banner">
+            <span>
+              发现新版本 v{updateNotice.latestVersion}（当前 v{updateNotice.currentVersion}）
+            </span>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void openExternal(updateNotice.releaseUrl)}
+              >
+                去下载
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-tiny"
+                onClick={() => setUpdateNotice(null)}
+              >
+                忽略
+              </button>
+            </div>
+          </div>
+        )}
         {view.name === 'library' && (
           <LibraryPage
             version={libraryVersion}

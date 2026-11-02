@@ -12,7 +12,7 @@ use crate::dto::{
     FileEntryDto, GameStatusDto, ImportReportDto, ItemDetailDto, ItemSummaryDto, MetadataCacheDto,
     PluginEntryDto, PluginInvocationDto, PluginOverviewDto, ProgressDto, PullReportDto,
     PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
-    SubjectSearchHitDto, SyncQueueDto, SyncStatsDto,
+    SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
 use crate::logs::LogInfoDto;
@@ -421,6 +421,26 @@ pub async fn bangumi_subject_preview(
 ) -> ApiResult<SubjectPreviewDto> {
     let services = Arc::clone(services.inner());
     services.bangumi_subject_preview(subject_id).await
+}
+
+/// 当前应用版本（取自 `tauri.conf.json`，与安装包版本一致）。
+#[tauri::command]
+pub async fn app_version(app: tauri::AppHandle) -> ApiResult<String> {
+    Ok(app.package_info().version.to_string())
+}
+
+/// 检查是否有新版本。只读 GitHub Release，不下载、不安装。
+///
+/// 当前版本取自 Tauri 的应用元数据（即 `tauri.conf.json` 的 version），
+/// 避免与 workspace 里各 crate 的版本各说各话。
+#[tauri::command]
+pub async fn check_update(
+    app: tauri::AppHandle,
+    services: State<'_, Arc<Services>>,
+) -> ApiResult<UpdateCheckDto> {
+    let version = app.package_info().version.to_string();
+    let services = Arc::clone(services.inner());
+    services.check_update(&version).await
 }
 
 /// 用系统默认浏览器打开链接（只接受 http/https）。

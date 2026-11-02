@@ -72,6 +72,8 @@ fn main() {
             commands::bangumi_account,
             commands::bangumi_subject_preview,
             commands::open_external,
+            commands::check_update,
+            commands::app_version,
             commands::save_bangumi_config,
             commands::bangumi_authorize,
             commands::bangumi_logout,
