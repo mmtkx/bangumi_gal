@@ -83,8 +83,10 @@ export default function EpisodePicker({ itemId, title, onClose, onPlayed }: Prop
           <p className="muted modal-body">这个条目下没有找到视频文件。</p>
         ) : (
           <ul className="episode-list">
-            {files.map((file) => {
-              const seen = file.episode !== null && watched.has(file.episode);
+            {files.map((file, index) => {
+              // 集号缺失时退回文件序号（与详情页同一套写法），保证「已看」标记与进度对得上。
+              const episode = file.episode ?? index + 1;
+              const seen = watched.has(episode);
               return (
                 <li key={file.name}>
                   <button
@@ -95,7 +97,12 @@ export default function EpisodePicker({ itemId, title, onClose, onPlayed }: Prop
                     title={file.name}
                   >
                     <span className="episode-no">
-                      {file.episode === null ? '—' : `第 ${file.episode} 集`}
+                      {file.episode === null ? `第 ${episode} 集（按序号）` : `第 ${episode} 集`}
+                      {file.special && (
+                        <span className="badge badge-special" title="附属内容，集号独立于正片">
+                          特典
+                        </span>
+                      )}
                     </span>
                     <span className="episode-name mono">{file.name}</span>
                     {seen ? <span className="badge badge-status">已看</span> : null}

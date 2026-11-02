@@ -14,6 +14,8 @@ export interface MediaFile {
   episode: number | null;
   /** 来源目录（相对条目目录），直属文件缺省。 */
   group?: string | null;
+  /** 来自附属目录（SPs / 特典 / NCOP 等）：集号排在正片之后单独编组。 */
+  special: boolean;
 }
 
 export interface ItemSummary {
@@ -750,6 +752,28 @@ export function formatBytes(bytes: number): string {
     index += 1;
   }
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`;
+}
+
+// ---- 检查更新 ----
+
+export interface UpdateCheck {
+  currentVersion: string;
+  latestVersion: string;
+  hasUpdate: boolean;
+  /** 发布页地址，交给系统浏览器打开。 */
+  releaseUrl: string;
+  notes: string | null;
+  publishedAt: string | null;
+}
+
+/** 当前应用版本（来自 tauri.conf.json）。 */
+export function appVersion(): Promise<string> {
+  return call<string>('app_version');
+}
+
+/** 查询 GitHub 最新 Release。只读版本号，不下载、不安装。 */
+export function checkUpdate(): Promise<UpdateCheck> {
+  return call<UpdateCheck>('check_update');
 }
 
 /** 秒数转 mm:ss / h:mm:ss，用于进度展示。 */

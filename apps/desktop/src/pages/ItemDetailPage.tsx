@@ -1015,11 +1015,23 @@ export default function ItemDetailPage({ id, onBack, onChanged }: Props) {
                       )}
                       <td className="muted">{formatBytes(file.sizeBytes)}</td>
                       <td className="muted">
-                        {isGame
-                          ? '可启动'
-                          : file.episode === null
-                            ? `第 ${episode} 集（按序号）`
-                            : `第 ${episode} 集`}
+                        {isGame ? (
+                          '可启动'
+                        ) : (
+                          <>
+                            {file.episode === null
+                              ? `第 ${episode} 集（按序号）`
+                              : `第 ${episode} 集`}
+                            {file.special && (
+                              <span
+                                className="badge badge-special"
+                                title="附属内容，集号独立于正片"
+                              >
+                                特典
+                              </span>
+                            )}
+                          </>
+                        )}
                       </td>
                       {!isGame && (
                         <td className="muted">
