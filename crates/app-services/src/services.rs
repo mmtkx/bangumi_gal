@@ -2276,6 +2276,31 @@ impl Services {
         })
     }
 
+    /// 退出前把播放进度落一次库。
+    ///
+    /// 进度是每秒轮询写入的，正常退出最多丢不到一秒；这里补最后一跳，
+    /// 顺带覆盖「刚关掉播放器就退出」的情况——那一跳会把会话结束事件发出去。
+    /// 故意不额外入同步队列：半集进度不该被当成「看过」推到云端。
+    pub fn flush_before_exit(&self) {
+        match self.player.check_once() {
+            Ok(finished) => {
+                if !finished.is_empty() {
+                    // 会话结束事件由后台订阅任务入队，给它一点时间跑完再让进程退出。
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "退出前刷新播放进度失败"),
+        }
+    }
+
+    /// 关闭主窗口时是否留驻托盘。读不到设置时按留驻处理。
+    pub fn close_to_tray(&self) -> bool {
+        self.settings
+            .load()
+            .map(|settings| settings.close_to_tray)
+            .unwrap_or(true)
+    }
+
     /// 检查是否有新版本。只读 GitHub Release，不下载、不安装。
     pub async fn check_update(&self, current_version: &str) -> ApiResult<UpdateCheckDto> {
         crate::update::check(current_version, self.config_provider.proxy().as_deref()).await
@@ -2483,6 +2508,7 @@ impl Services {
                 .plugins_dir
                 .map(|path| path.to_string_lossy().to_string()),
             default_plugins_dir: self.default_plugins_dir.to_string_lossy().to_string(),
+            close_to_tray: settings.close_to_tray,
         }
     }
 }
@@ -2796,6 +2822,7 @@ mod tests {
                 player_path: Some("C:\\Windows\\System32\\where.exe".into()),
                 player_args: Some("\"{file}\" /seek={seconds}".into()),
                 plugins_dir: None,
+                close_to_tray: true,
             })
             .expect("player");
 

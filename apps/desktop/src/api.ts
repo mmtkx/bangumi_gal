@@ -75,6 +75,8 @@ export interface Settings {
   bangumiDefaultRedirectUri: string;
   pluginsDir: string | null;
   defaultPluginsDir: string;
+  /** 关闭主窗口时留驻托盘；关闭则直接退出进程。 */
+  closeToTray: boolean;
 }
 
 export interface SettingsInput {
@@ -84,6 +86,7 @@ export interface SettingsInput {
   playerPath: string | null;
   playerArgs: string | null;
   pluginsDir: string | null;
+  closeToTray: boolean;
 }
 
 export interface DirEntry {

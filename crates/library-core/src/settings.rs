@@ -24,6 +24,9 @@ pub mod keys {
 
     /// 插件根目录；空表示使用默认位置（应用数据目录下的 plugins）。
     pub const PLUGINS_DIR: &str = "plugins_dir";
+
+    /// 关闭主窗口时是否留驻托盘（`1` 留驻 / `0` 直接退出）；缺省为留驻。
+    pub const CLOSE_TO_TRAY: &str = "close_to_tray";
 }
 
 /// 键值设置存储的抽象。library-core 只负责落库，不做业务校验。

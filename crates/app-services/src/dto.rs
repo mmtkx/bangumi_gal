@@ -29,6 +29,8 @@ pub struct SettingsDto {
     pub plugins_dir: Option<String>,
     /// 默认插件目录（应用数据目录下的 plugins）。
     pub default_plugins_dir: String,
+    /// 关闭主窗口时是否留驻托盘。
+    pub close_to_tray: bool,
 }
 
 /// 列表页的媒体摘要（不含完整文件列表，避免列表响应过大）。

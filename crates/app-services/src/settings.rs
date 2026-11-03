@@ -32,7 +32,7 @@ pub fn default_metadata_dir() -> PathBuf {
 pub const DEFAULT_BANGUMI_REDIRECT_URI: &str = "http://127.0.0.1:27432/callback";
 
 /// 设置页提交的输入。空字符串/null 表示「清除该配置」。
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsInput {
     pub anime_root: Option<String>,
@@ -41,6 +41,29 @@ pub struct SettingsInput {
     pub player_path: Option<String>,
     pub player_args: Option<String>,
     pub plugins_dir: Option<String>,
+    /// 关闭窗口时留驻托盘；缺省为 true（老前端不带该字段时保持默认行为）。
+    #[serde(default = "default_close_to_tray")]
+    pub close_to_tray: bool,
+}
+
+fn default_close_to_tray() -> bool {
+    true
+}
+
+/// 手写 Default：派生会给 `close_to_tray` 填 false，与产品默认（留驻托盘）相反，
+/// 而且 serde 的 `default` 与 `Default::default()` 会给出两套不同的值。
+impl Default for SettingsInput {
+    fn default() -> Self {
+        Self {
+            anime_root: None,
+            game_root: None,
+            metadata_cache_dir: None,
+            player_path: None,
+            player_args: None,
+            plugins_dir: None,
+            close_to_tray: default_close_to_tray(),
+        }
+    }
 }
 
 /// Bangumi OAuth 凭据输入。
@@ -68,6 +91,8 @@ pub struct AppSettings {
     pub bangumi_proxy: Option<String>,
     /// 自定义插件根目录；None 表示使用默认位置。
     pub plugins_dir: Option<PathBuf>,
+    /// 关闭主窗口时是否留驻托盘。
+    pub close_to_tray: bool,
 }
 
 /// 完整的 Bangumi OAuth 配置（三项齐全才可用）。
@@ -121,6 +146,11 @@ impl SettingsService {
             bangumi_redirect_uri: non_empty(self.store.get(keys::BANGUMI_REDIRECT_URI)?),
             bangumi_proxy: non_empty(self.store.get(keys::BANGUMI_PROXY)?),
             plugins_dir: non_empty(self.store.get(keys::PLUGINS_DIR)?).map(PathBuf::from),
+            // 默认留驻：后台还在跑播放器/游戏轮询与连播驱动，直接退出会静默丢掉这些状态。
+            close_to_tray: match self.store.get(keys::CLOSE_TO_TRAY)? {
+                Some(raw) => raw.trim() != "0",
+                None => true,
+            },
         })
     }
 
@@ -336,6 +366,11 @@ impl SettingsService {
             Some(args) => self.store.set(keys::PLAYER_ARGS, args)?,
             None => self.store.remove(keys::PLAYER_ARGS)?,
         }
+
+        self.store.set(
+            keys::CLOSE_TO_TRAY,
+            if input.close_to_tray { "1" } else { "0" },
+        )?;
 
         self.load()
     }
@@ -598,6 +633,24 @@ mod tests {
             })
             .expect("clear");
         assert!(service.load().expect("load").plugins_dir.is_none());
+
+        fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn close_to_tray_defaults_to_true_and_persists_choice() {
+        let (service, base) = service();
+        // 没存过就是留驻：后台轮询还在跑，直接退出会静默丢掉播放状态。
+        assert!(service.load().expect("load").close_to_tray);
+
+        let saved = service
+            .save(&SettingsInput {
+                close_to_tray: false,
+                ..Default::default()
+            })
+            .expect("save");
+        assert!(!saved.close_to_tray);
+        assert!(!service.load().expect("load").close_to_tray);
 
         fs::remove_dir_all(base).ok();
     }

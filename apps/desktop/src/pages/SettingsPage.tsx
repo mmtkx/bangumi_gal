@@ -59,6 +59,7 @@ export default function SettingsPage({ onSaved }: Props) {
   const [pluginsDir, setPluginsDir] = useState('');
   const [playerPath, setPlayerPath] = useState('');
   const [playerArgs, setPlayerArgs] = useState('');
+  const [closeToTray, setCloseToTray] = useState(true);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [plugins, setPlugins] = useState<PluginOverview | null>(null);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
@@ -92,6 +93,7 @@ export default function SettingsPage({ onSaved }: Props) {
         setPluginsDir(data.pluginsDir ?? '');
         setPlayerPath(data.playerPath ?? '');
         setPlayerArgs(data.playerArgs);
+        setCloseToTray(data.closeToTray);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -152,6 +154,7 @@ export default function SettingsPage({ onSaved }: Props) {
         playerPath: playerPath.trim() === '' ? null : playerPath.trim(),
         playerArgs: playerArgs.trim() === '' ? null : playerArgs.trim(),
         pluginsDir: pluginsDir.trim() === '' ? null : pluginsDir.trim(),
+        closeToTray,
       });
       setSettings(saved);
       setAnimeRoot(saved.animeRoot ?? '');
@@ -160,6 +163,7 @@ export default function SettingsPage({ onSaved }: Props) {
       setPluginsDir(saved.pluginsDir ?? '');
       setPlayerPath(saved.playerPath ?? '');
       setPlayerArgs(saved.playerArgs);
+      setCloseToTray(saved.closeToTray);
       // 根目录变化会触发后台「扫描 + 自动匹配」，提示里说清楚，免得用户以为要手动点扫描。
       const rootsChanged =
         (settings?.animeRoot ?? null) !== saved.animeRoot ||
@@ -710,6 +714,22 @@ export default function SettingsPage({ onSaved }: Props) {
         ) : (
           <div className="placeholder small">还没有日志文件。</div>
         )}
+      </section>
+
+      <section className="card">
+        <h2>窗口与托盘</h2>
+        <p className="muted">
+          留驻托盘后应用仍在后台运行：播放会话轮询、进度回写与连播会继续工作。
+          要彻底退出，右键托盘图标选「退出」，或取消下面的选项后再关窗口。
+        </p>
+        <label className="checkbox-inline" title="关闭主窗口时只隐藏窗口，不结束进程">
+          <input
+            type="checkbox"
+            checked={closeToTray}
+            onChange={(event) => setCloseToTray(event.target.checked)}
+          />
+          关闭主窗口时留驻托盘（取消勾选则关闭即退出应用）
+        </label>
       </section>
 
       <section className="card">
