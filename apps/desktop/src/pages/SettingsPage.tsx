@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 
 import {
+  appVersion,
+  checkUpdate,
   clearMetadataCache,
   formatBytes,
   getSettings,
   logLocation,
   metadataCacheStats,
+  openExternal,
   openLogDir,
   pluginInstall,
   pluginInvoke,
@@ -19,6 +22,7 @@ import {
   type PluginInvocation,
   type PluginOverview,
   type Settings,
+  type UpdateCheck,
 } from '../api';
 import DirectoryPicker from '../components/DirectoryPicker';
 import ExePicker from '../components/ExePicker';
@@ -70,6 +74,11 @@ export default function SettingsPage({ onSaved }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // 检查更新：结果只用于展示，不涉及下载与安装。
+  const [version, setVersion] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateCheck | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +214,25 @@ export default function SettingsPage({ onSaved }: Props) {
       setLogs(await logLocation());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  useEffect(() => {
+    // 版本号单独取，没必要为了显示「当前版本」去打一次 GitHub。
+    appVersion()
+      .then(setVersion)
+      .catch(() => undefined);
+  }, []);
+
+  async function handleCheckUpdate() {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      setUpdate(await checkUpdate());
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUpdateBusy(false);
     }
   }
 
@@ -682,6 +710,45 @@ export default function SettingsPage({ onSaved }: Props) {
         ) : (
           <div className="placeholder small">还没有日志文件。</div>
         )}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2>关于</h2>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-tiny"
+              onClick={() => void handleCheckUpdate()}
+              disabled={updateBusy}
+            >
+              {updateBusy ? '检查中…' : '检查更新'}
+            </button>
+          </div>
+        </div>
+        <p className="muted">
+          当前版本 <span className="mono">{version ? `v${version}` : '—'}</span>
+          {update ? ` · 最新版本 v${update.latestVersion}` : ''}
+        </p>
+        {updateError && <div className="banner banner-error">{updateError}</div>}
+        {update && !update.hasUpdate && !updateError && (
+          <p className="muted">已是最新版本。软件不会自动下载或安装更新。</p>
+        )}
+        {update?.hasUpdate && (
+          <div className="banner banner-warn">
+            <span>发现新版本 v{update.latestVersion}，下载安装包覆盖安装即可。</span>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void openExternal(update.releaseUrl)}
+              >
+                打开发布页
+              </button>
+            </div>
+          </div>
+        )}
+        {update?.hasUpdate && update.notes && <p className="muted update-notes">{update.notes}</p>}
       </section>
 
       {picker === 'player' ? (

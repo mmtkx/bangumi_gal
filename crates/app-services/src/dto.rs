@@ -444,3 +444,16 @@ pub struct PluginInvocationDto {
     /// 消耗的指令预算，便于判断插件是否接近上限。
     pub fuel_used: u64,
 }
+
+/// 检查更新的结果。只描述「有没有新版」，不含下载/安装能力。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheckDto {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    /// 发布页地址，由前端交给系统浏览器打开。
+    pub release_url: String,
+    pub notes: Option<String>,
+    pub published_at: Option<String>,
+}

@@ -130,6 +130,12 @@ pub struct MediaFile {
     /// 来源目录（相对条目目录，如 `Season 2`、`[VCB-Studio] ...`）；直属文件为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// 是否来自附属目录（SPs / 特典 / NCOP 等）。
+    ///
+    /// 这些文件的集号单独编组（排在正片之后顺延），文件名里的编号不参与正片集号，
+    /// 否则 `SP 01` 会与第 1 集撞号、把两者的进度写到同一行。
+    #[serde(default)]
+    pub special: bool,
 }
 
 /// 按需探测磁盘得到的条目媒体摘要。

@@ -463,6 +463,24 @@ body {
   color: #9be2a5;
 }
 
+/* 顶栏的更新提示：与下方内容留出间距，按钮靠右。 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+/* 更新说明：保留原始换行，过长时内部滚动，不撑高设置页。 */
+.update-notes {
+  margin: 8px 0 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-line;
+  font-size: 12.5px;
+}
+
 .placeholder {
   border: 1px dashed var(--border);
   border-radius: var(--radius);
@@ -562,7 +580,7 @@ body {
 }
 
 .col-episode {
-  width: 110px;
+  width: 136px;
 }
 
 .badge {
@@ -590,6 +608,14 @@ body {
   color: #ff9d94;
   border-color: rgba(226, 87, 76, 0.35);
   font-family: 'Cascadia Mono', Consolas, monospace;
+}
+
+/* 附属内容（SPs / 特典 / NCOP）标记：中性色，不与类型、收藏状态徽章抢注意力。 */
+.badge-special {
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  border-color: var(--border);
+  margin-left: 6px;
 }
 
 .card {
@@ -1595,7 +1621,8 @@ button.chip:hover {
 .episode-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 76px 1fr auto auto;
+  /* 首列留足「第 100 集 + 特典徽章」的宽度，否则 nowrap 的集号会压到文件名上。 */
+  grid-template-columns: 112px 1fr auto auto;
   align-items: center;
   gap: 10px;
   padding: 8px 10px;
