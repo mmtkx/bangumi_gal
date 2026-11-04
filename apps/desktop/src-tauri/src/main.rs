@@ -100,6 +100,9 @@ fn main() {
             tracing::info!("检测到应用已在运行，唤回已有窗口");
             show_main_window(app);
         }))
+        // 更新器：端点与公钥在 tauri.conf.json 的 plugins.updater 里，
+        // 私钥只在打包时通过 TAURI_SIGNING_PRIVATE_KEY 提供，绝不进仓库。
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app
@@ -174,6 +177,7 @@ fn main() {
             commands::bangumi_subject_preview,
             commands::open_external,
             commands::check_update,
+            commands::install_update,
             commands::app_version,
             commands::save_bangumi_config,
             commands::bangumi_authorize,

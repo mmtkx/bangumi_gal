@@ -15,6 +15,8 @@ scanner-game = { workspace = true }
 bangumi-sync = { workspace = true }
 plugin-host = { workspace = true }
 tauri = { workspace = true }
+# 检查更新与下载安装要走官方更新器（验签 + 静默安装），逻辑在 update.rs。
+tauri-plugin-updater = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

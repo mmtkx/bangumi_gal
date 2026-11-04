@@ -6,6 +6,7 @@ import {
   clearMetadataCache,
   formatBytes,
   getSettings,
+  installUpdate,
   logLocation,
   metadataCacheStats,
   openExternal,
@@ -16,6 +17,7 @@ import {
   pluginSetEnabled,
   pluginUninstall,
   saveSettings,
+  subscribeUpdateProgress,
   type CacheStats,
   type LogLocation,
   type PluginInfo,
@@ -23,6 +25,7 @@ import {
   type PluginOverview,
   type Settings,
   type UpdateCheck,
+  type UpdateProgress,
 } from '../api';
 import DirectoryPicker from '../components/DirectoryPicker';
 import ExePicker from '../components/ExePicker';
@@ -80,6 +83,9 @@ export default function SettingsPage({ onSaved }: Props) {
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  // 下载安装：装完后进程由安装器接管并重启，所以只保留进度与错误两个状态。
+  const [installing, setInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -227,6 +233,36 @@ export default function SettingsPage({ onSaved }: Props) {
       .then(setVersion)
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!installing) return;
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void subscribeUpdateProgress((progress) => setUpdateProgress(progress)).then((unlisten) => {
+      if (cancelled) unlisten();
+      else dispose = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [installing]);
+
+  async function handleInstallUpdate() {
+    setInstalling(true);
+    setUpdateProgress(null);
+    setUpdateError(null);
+    try {
+      await installUpdate();
+      // 走到这里说明安装器没有接管进程（非 Windows），提示用户手动重启。
+      setUpdateError(null);
+      setNotice('更新已安装，请手动重启应用生效。');
+      setInstalling(false);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setInstalling(false);
+    }
+  }
 
   async function handleCheckUpdate() {
     setUpdateBusy(true);
@@ -756,8 +792,21 @@ export default function SettingsPage({ onSaved }: Props) {
         )}
         {update?.hasUpdate && (
           <div className="banner banner-warn">
-            <span>发现新版本 v{update.latestVersion}，下载安装包覆盖安装即可。</span>
+            <span>
+              发现新版本 v{update.latestVersion}
+              {update.autoInstall ? '，可直接下载安装。' : '，需到发布页下载安装包。'}
+            </span>
             <div className="row-actions">
+              {update.autoInstall && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-tiny"
+                  onClick={() => void handleInstallUpdate()}
+                  disabled={installing}
+                >
+                  {installing ? '下载中…' : '下载并安装'}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-tiny"
@@ -767,6 +816,15 @@ export default function SettingsPage({ onSaved }: Props) {
               </button>
             </div>
           </div>
+        )}
+        {installing && (
+          <p className="muted">
+            {updateProgress
+              ? `已下载 ${formatBytes(updateProgress.downloaded)}${
+                  updateProgress.total ? ` / ${formatBytes(updateProgress.total)}` : ''
+                } · 下载完成后应用会自动退出并由安装程序重启`
+              : '正在准备下载…'}
+          </p>
         )}
         {update?.hasUpdate && update.notes && <p className="muted update-notes">{update.notes}</p>}
       </section>

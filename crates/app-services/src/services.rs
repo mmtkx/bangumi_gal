@@ -2301,9 +2301,18 @@ impl Services {
             .unwrap_or(true)
     }
 
-    /// 检查是否有新版本。只读 GitHub Release，不下载、不安装。
-    pub async fn check_update(&self, current_version: &str) -> ApiResult<UpdateCheckDto> {
-        crate::update::check(current_version, self.config_provider.proxy().as_deref()).await
+    /// 检查是否有新版本。优先走官方更新器（可安装），失败退回发布页检查（只能提示）。
+    pub async fn check_update(
+        &self,
+        app: &tauri::AppHandle,
+        current_version: &str,
+    ) -> ApiResult<UpdateCheckDto> {
+        crate::update::check(
+            app,
+            current_version,
+            self.config_provider.proxy().as_deref(),
+        )
+        .await
     }
 
     /// 用系统默认浏览器打开 http(s) 链接。

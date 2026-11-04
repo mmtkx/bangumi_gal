@@ -458,4 +458,6 @@ pub struct UpdateCheckDto {
     pub release_url: String,
     pub notes: Option<String>,
     pub published_at: Option<String>,
+    /// 是否可以直接下载安装（走官方更新器 + 签名校验）。为 false 时只能引导用户去发布页。
+    pub auto_install: bool,
 }

@@ -439,8 +439,15 @@ pub async fn check_update(
     services: State<'_, Arc<Services>>,
 ) -> ApiResult<UpdateCheckDto> {
     let version = app.package_info().version.to_string();
+    let handle = app.clone();
     let services = Arc::clone(services.inner());
-    services.check_update(&version).await
+    services.check_update(&handle, &version).await
+}
+
+/// 下载并安装更新。成功时进程会由安装器接管并重启，前端通常收不到返回值。
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> ApiResult<()> {
+    crate::update::install(&app).await
 }
 
 /// 用系统默认浏览器打开链接（只接受 http/https）。

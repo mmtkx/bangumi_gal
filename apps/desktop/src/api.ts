@@ -767,6 +767,13 @@ export interface UpdateCheck {
   releaseUrl: string;
   notes: string | null;
   publishedAt: string | null;
+  /** 可直接下载安装（更新包带签名）；为 false 时只能打开发布页手动下载。 */
+  autoInstall: boolean;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
 }
 
 /** 当前应用版本（来自 tauri.conf.json）。 */
@@ -774,9 +781,24 @@ export function appVersion(): Promise<string> {
   return call<string>('app_version');
 }
 
-/** 查询 GitHub 最新 Release。只读版本号，不下载、不安装。 */
+/** 查询是否有新版本。优先走官方更新器（可安装），失败退回发布页检查。 */
 export function checkUpdate(): Promise<UpdateCheck> {
   return call<UpdateCheck>('check_update');
+}
+
+/**
+ * 下载并安装更新（需更新包带签名）。
+ * Windows 上安装器启动后进程会自行退出并重启，这个 Promise 通常不会返回。
+ */
+export function installUpdate(): Promise<void> {
+  return call<void>('install_update');
+}
+
+/** 订阅更新下载进度（独立事件通道，不走主事件总线）。 */
+export async function subscribeUpdateProgress(
+  handler: (progress: UpdateProgress) => void,
+): Promise<() => void> {
+  return listen<UpdateProgress>('update:progress', (event) => handler(event.payload));
 }
 
 /** 秒数转 mm:ss / h:mm:ss，用于进度展示。 */
