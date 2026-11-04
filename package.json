@@ -1,6 +1,6 @@
 {
   "name": "lagm",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "本地动画 / 游戏库管理客户端",
   "scripts": {
