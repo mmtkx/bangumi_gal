@@ -10,10 +10,6 @@ use tauri::{AppHandle, Manager};
 
 mod logging;
 
-/// 托盘专用小图标：32×32、配色沿用应用图标，图形简化为圆角方块 + 播放三角。
-/// 直接用应用图标（插画风格）缩到 16～24px 会糊成一团，所以单独做一张。
-const TRAY_ICON_PNG: &[u8] = include_bytes!("../icons/tray.png");
-
 /// 把主窗口显示出来并置前。托盘左键、托盘菜单都走这里。
 fn show_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
@@ -68,15 +64,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         });
 
-    match tauri::image::Image::from_bytes(TRAY_ICON_PNG) {
-        Ok(icon) => builder = builder.icon(icon),
-        Err(err) => {
-            // 图标解不出来不该让应用起不来：退回应用默认图标。
-            tracing::warn!(error = %err, "托盘图标解析失败，改用应用默认图标");
-            if let Some(icon) = app.default_window_icon().cloned() {
-                builder = builder.icon(icon);
-            }
-        }
+    // 托盘沿用软件自己的图标，保证任务栏与托盘一眼能对应上。
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        tracing::warn!("应用没有默认图标，托盘将显示为空白");
     }
     builder.build(app)?;
     Ok(())
@@ -178,6 +170,9 @@ fn main() {
             commands::open_external,
             commands::check_update,
             commands::install_update,
+            commands::set_item_nsfw,
+            commands::nsfw_candidates,
+            commands::rescan_nsfw,
             commands::app_version,
             commands::save_bangumi_config,
             commands::bangumi_authorize,

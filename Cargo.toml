@@ -34,7 +34,7 @@ tauri-plugin-single-instance = "2"
 # 官方更新器：负责验签、下载、静默安装。签名校验不可关闭，公钥见 tauri.conf.json。
 tauri-plugin-updater = "2"
 
-tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
+tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-build = { version = "2.7", features = [] }
 
 serde = { version = "1", features = ["derive"] }
