@@ -44,6 +44,9 @@ pub struct SettingsInput {
     /// 关闭窗口时留驻托盘；缺省为 true（老前端不带该字段时保持默认行为）。
     #[serde(default = "default_close_to_tray")]
     pub close_to_tray: bool,
+    /// 是否隐藏成人内容条目；缺省为 true。
+    #[serde(default = "default_close_to_tray")]
+    pub hide_nsfw: bool,
 }
 
 fn default_close_to_tray() -> bool {
@@ -62,6 +65,7 @@ impl Default for SettingsInput {
             player_args: None,
             plugins_dir: None,
             close_to_tray: default_close_to_tray(),
+            hide_nsfw: default_close_to_tray(),
         }
     }
 }
@@ -93,6 +97,8 @@ pub struct AppSettings {
     pub plugins_dir: Option<PathBuf>,
     /// 关闭主窗口时是否留驻托盘。
     pub close_to_tray: bool,
+    /// 是否隐藏成人内容条目。
+    pub hide_nsfw: bool,
 }
 
 /// 完整的 Bangumi OAuth 配置（三项齐全才可用）。
@@ -148,6 +154,10 @@ impl SettingsService {
             plugins_dir: non_empty(self.store.get(keys::PLUGINS_DIR)?).map(PathBuf::from),
             // 默认留驻：后台还在跑播放器/游戏轮询与连播驱动，直接退出会静默丢掉这些状态。
             close_to_tray: match self.store.get(keys::CLOSE_TO_TRAY)? {
+                Some(raw) => raw.trim() != "0",
+                None => true,
+            },
+            hide_nsfw: match self.store.get(keys::HIDE_NSFW)? {
                 Some(raw) => raw.trim() != "0",
                 None => true,
             },
@@ -371,6 +381,8 @@ impl SettingsService {
             keys::CLOSE_TO_TRAY,
             if input.close_to_tray { "1" } else { "0" },
         )?;
+        self.store
+            .set(keys::HIDE_NSFW, if input.hide_nsfw { "1" } else { "0" })?;
 
         self.load()
     }

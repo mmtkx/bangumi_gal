@@ -1,4 +1,4 @@
-use library_core::model::{ItemKind, MediaFile, ScanReport};
+use library_core::model::{ItemKind, MediaFile, NsfwState, ScanReport};
 use serde::Serialize;
 
 /// 设置页数据。`defaultMetadataCacheDir` 让前端能展示「恢复默认」。
@@ -31,6 +31,8 @@ pub struct SettingsDto {
     pub default_plugins_dir: String,
     /// 关闭主窗口时是否留驻托盘。
     pub close_to_tray: bool,
+    /// 是否隐藏成人内容条目。
+    pub hide_nsfw: bool,
 }
 
 /// 列表页的媒体摘要（不含完整文件列表，避免列表响应过大）。
@@ -54,6 +56,8 @@ pub struct ItemSummaryDto {
     pub collection_status: Option<i64>,
     pub rating: Option<i64>,
     pub collection_updated_at: Option<String>,
+    /// 成人内容标记：unknown / safe / adult。
+    pub nsfw: NsfwState,
     pub media: MediaSummaryDto,
 }
 
@@ -460,4 +464,16 @@ pub struct UpdateCheckDto {
     pub published_at: Option<String>,
     /// 是否可以直接下载安装（走官方更新器 + 签名校验）。为 false 时只能引导用户去发布页。
     pub auto_install: bool,
+}
+
+/// 重新判定成人内容标记的统计。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NsfwRescanDto {
+    pub adult: usize,
+    pub safe: usize,
+    /// 已有结论的（含人工裁定），本轮跳过。
+    pub skipped: usize,
+    /// 没绑定 Bangumi 或没有元数据缓存，无法判定。
+    pub unmatched: usize,
 }

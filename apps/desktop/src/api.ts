@@ -3,6 +3,8 @@ import { listen } from '@tauri-apps/api/event';
 
 export type ItemKind = 'anime' | 'game';
 
+export type NsfwState = 'unknown' | 'safe' | 'adult';
+
 export interface MediaSummary {
   fileCount: number;
   episodeHint: string | null;
@@ -31,6 +33,8 @@ export interface ItemSummary {
   /** Bangumi 评分 0-10，null 表示未评分。 */
   rating: number | null;
   collectionUpdatedAt: string | null;
+  /** 成人内容标记：未判定 / 正常 / 成人。 */
+  nsfw: NsfwState;
   media: MediaSummary;
 }
 
@@ -77,6 +81,8 @@ export interface Settings {
   defaultPluginsDir: string;
   /** 关闭主窗口时留驻托盘；关闭则直接退出进程。 */
   closeToTray: boolean;
+  /** 是否隐藏成人内容条目。 */
+  hideNsfw: boolean;
 }
 
 export interface SettingsInput {
@@ -87,6 +93,7 @@ export interface SettingsInput {
   playerArgs: string | null;
   pluginsDir: string | null;
   closeToTray: boolean;
+  hideNsfw: boolean;
 }
 
 export interface DirEntry {
@@ -774,6 +781,30 @@ export interface UpdateCheck {
 export interface UpdateProgress {
   downloaded: number;
   total: number | null;
+}
+
+// ---- 成人内容标记 ----
+
+export interface NsfwRescan {
+  adult: number;
+  safe: number;
+  skipped: number;
+  unmatched: number;
+}
+
+/** 人工设置条目的成人内容标记。 */
+export function setItemNsfw(id: string, state: NsfwState): Promise<ItemSummary> {
+  return call<ItemSummary>('set_item_nsfw', { id, state });
+}
+
+/** 待人工裁定的条目（只有未判定的会返回）。 */
+export function nsfwCandidates(): Promise<ItemSummary[]> {
+  return call<ItemSummary[]>('nsfw_candidates');
+}
+
+/** 用已缓存的元数据重新判定成人内容，不联网。 */
+export function rescanNsfw(): Promise<NsfwRescan> {
+  return call<NsfwRescan>('rescan_nsfw');
 }
 
 /** 当前应用版本（来自 tauri.conf.json）。 */

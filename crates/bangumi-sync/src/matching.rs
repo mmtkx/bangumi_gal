@@ -516,6 +516,7 @@ mod tests {
             name: name.into(),
             name_cn: name_cn.map(str::to_owned),
             score: None,
+            nsfw: false,
         }
     }
 

@@ -35,6 +35,38 @@ impl ItemKind {
     }
 }
 
+/// 条目是否为成人内容，对应 `library_item.nsfw`（0004 迁移）。
+///
+/// 三态而不是布尔：`Unknown` 与 `Safe` 必须分开——未判定的一概隐藏会让用户
+/// 以为条目丢了；而自动判定只在 `Unknown` 时写入，保证人工设定不会被后续刷新覆盖。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NsfwState {
+    Unknown,
+    Safe,
+    Adult,
+}
+
+impl NsfwState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Safe => "safe",
+            Self::Adult => "adult",
+        }
+    }
+
+    /// 解析数据库里的值。无法识别的值按「未判定」处理：宁可让用户自己判断，
+    /// 也不要因为一个陌生字符串把条目误判成成人内容。
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "safe" => Self::Safe,
+            "adult" => Self::Adult,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// `library_item` 一行。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +89,8 @@ pub struct LibraryItem {
     /// 根目录直接放视频时，一个目录会有多个条目，用该字段区分各自拥有的文件；
     /// `None` 表示整个目录都属于这个条目（原有的目录型条目）。
     pub file_filter: Option<String>,
+    /// 成人内容标记（0004 迁移新增）：未判定 / 正常 / 成人。
+    pub nsfw: NsfwState,
 }
 
 /// 扫描器交给仓储写入的最小字段集合。
@@ -333,6 +367,7 @@ mod tests {
             rating: None,
             collection_updated_at: None,
             file_filter: None,
+            nsfw: NsfwState::Unknown,
         };
         report.record(&UpsertOutcome::Created(item.clone()));
         report.record(&UpsertOutcome::Unchanged(item));

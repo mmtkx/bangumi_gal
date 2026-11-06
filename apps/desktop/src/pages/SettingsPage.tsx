@@ -9,6 +9,7 @@ import {
   installUpdate,
   logLocation,
   metadataCacheStats,
+  nsfwCandidates,
   openExternal,
   openLogDir,
   pluginInstall,
@@ -16,9 +17,12 @@ import {
   pluginList,
   pluginSetEnabled,
   pluginUninstall,
+  rescanNsfw,
   saveSettings,
+  setItemNsfw,
   subscribeUpdateProgress,
   type CacheStats,
+  type ItemSummary,
   type LogLocation,
   type PluginInfo,
   type PluginInvocation,
@@ -63,6 +67,12 @@ export default function SettingsPage({ onSaved }: Props) {
   const [playerPath, setPlayerPath] = useState('');
   const [playerArgs, setPlayerArgs] = useState('');
   const [closeToTray, setCloseToTray] = useState(true);
+  const [hideNsfw, setHideNsfw] = useState(true);
+  // 待人工裁定的条目（只有未判定的会出现在这里）。
+  const [nsfwPending, setNsfwPending] = useState<ItemSummary[]>([]);
+  const [nsfwPicked, setNsfwPicked] = useState<string[]>([]);
+  const [nsfwBusy, setNsfwBusy] = useState(false);
+  const [nsfwNotice, setNsfwNotice] = useState<string | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [plugins, setPlugins] = useState<PluginOverview | null>(null);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
@@ -100,6 +110,7 @@ export default function SettingsPage({ onSaved }: Props) {
         setPlayerPath(data.playerPath ?? '');
         setPlayerArgs(data.playerArgs);
         setCloseToTray(data.closeToTray);
+        setHideNsfw(data.hideNsfw);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -161,6 +172,7 @@ export default function SettingsPage({ onSaved }: Props) {
         playerArgs: playerArgs.trim() === '' ? null : playerArgs.trim(),
         pluginsDir: pluginsDir.trim() === '' ? null : pluginsDir.trim(),
         closeToTray,
+        hideNsfw,
       });
       setSettings(saved);
       setAnimeRoot(saved.animeRoot ?? '');
@@ -170,6 +182,7 @@ export default function SettingsPage({ onSaved }: Props) {
       setPlayerPath(saved.playerPath ?? '');
       setPlayerArgs(saved.playerArgs);
       setCloseToTray(saved.closeToTray);
+      setHideNsfw(saved.hideNsfw);
       // 根目录变化会触发后台「扫描 + 自动匹配」，提示里说清楚，免得用户以为要手动点扫描。
       const rootsChanged =
         (settings?.animeRoot ?? null) !== saved.animeRoot ||
@@ -228,6 +241,10 @@ export default function SettingsPage({ onSaved }: Props) {
   }
 
   useEffect(() => {
+    void refreshNsfwPending();
+  }, []);
+
+  useEffect(() => {
     // 版本号单独取，没必要为了显示「当前版本」去打一次 GitHub。
     appVersion()
       .then(setVersion)
@@ -261,6 +278,53 @@ export default function SettingsPage({ onSaved }: Props) {
     } catch (err) {
       setUpdateError(err instanceof Error ? err.message : String(err));
       setInstalling(false);
+    }
+  }
+
+  async function refreshNsfwPending() {
+    try {
+      setNsfwPending(await nsfwCandidates());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleRescanNsfw() {
+    setNsfwBusy(true);
+    setNsfwNotice(null);
+    try {
+      const result = await rescanNsfw();
+      setNsfwNotice(
+        `重新判定完成：成人 ${result.adult} · 正常 ${result.safe} · 跳过 ${result.skipped} · 无法判定 ${result.unmatched}`,
+      );
+      await refreshNsfwPending();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNsfwBusy(false);
+    }
+  }
+
+  /** 把勾选的标为成人（隐藏）；`markRestSafe` 为 true 时把没勾选的一并标为正常。 */
+  async function applyNsfwSelection(markRestSafe: boolean) {
+    setNsfwBusy(true);
+    setNsfwNotice(null);
+    try {
+      for (const item of nsfwPending) {
+        const picked = nsfwPicked.includes(item.id);
+        if (picked) {
+          await setItemNsfw(item.id, 'adult');
+        } else if (markRestSafe) {
+          await setItemNsfw(item.id, 'safe');
+        }
+      }
+      setNsfwPicked([]);
+      await refreshNsfwPending();
+      setNotice('成人内容标记已更新。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNsfwBusy(false);
     }
   }
 
@@ -749,6 +813,85 @@ export default function SettingsPage({ onSaved }: Props) {
           </ul>
         ) : (
           <div className="placeholder small">还没有日志文件。</div>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>NSFW</h2>
+        <p className="muted">
+          开启后会隐藏标记为相关内容的条目。判定依据依次是 Bangumi 的 nsfw
+          标记、条目标签，最后是下面的人工裁定。尚未判定的条目一律照常显示。
+        </p>
+        <label className="checkbox-inline" title="隐藏被判定为成人内容的条目">
+          <input
+            type="checkbox"
+            checked={hideNsfw}
+            onChange={(event) => setHideNsfw(event.target.checked)}
+          />
+          隐藏标记为相关内容的条目（条目库搜索 nsfw 可临时查看）
+        </label>
+
+        <div className="card-head" style={{ marginTop: 12 }}>
+          <h3>待人工裁定（{nsfwPending.length}）</h3>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-tiny"
+              onClick={() => void handleRescanNsfw()}
+              disabled={nsfwBusy}
+            >
+              {nsfwBusy ? '处理中…' : '按已有元数据判定'}
+            </button>
+          </div>
+        </div>
+        <p className="muted">
+          只有「尚未判定」的条目会出现在这里：已由元数据自动判定的会自动排除。
+        </p>
+        {nsfwNotice && <p className="muted">{nsfwNotice}</p>}
+        {nsfwPending.length === 0 ? (
+          <div className="placeholder small">没有待裁定的条目。</div>
+        ) : (
+          <>
+            <ul className="nsfw-list">
+              {nsfwPending.map((item) => (
+                <li key={item.id} className="nsfw-row">
+                  <label className="checkbox-inline">
+                    <input
+                      type="checkbox"
+                      checked={nsfwPicked.includes(item.id)}
+                      onChange={(event) =>
+                        setNsfwPicked((picked) =>
+                          event.target.checked
+                            ? [...picked, item.id]
+                            : picked.filter((id) => id !== item.id),
+                        )
+                      }
+                    />
+                    {item.title}
+                  </label>
+                  <span className="muted">{item.kind === 'anime' ? '动画' : '游戏'}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void applyNsfwSelection(false)}
+                disabled={nsfwBusy || nsfwPicked.length === 0}
+              >
+                勾选的标为相关内容（{nsfwPicked.length}）
+              </button>
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void applyNsfwSelection(true)}
+                disabled={nsfwBusy}
+              >
+                勾选标为相关内容，其余标为正常
+              </button>
+            </div>
+          </>
         )}
       </section>
 

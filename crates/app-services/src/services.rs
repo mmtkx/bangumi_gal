@@ -11,7 +11,7 @@ use launcher::{Launcher, RunningGame};
 use library_core::binding::SqliteGameBindingRepository;
 use library_core::db::Db;
 use library_core::metadata::{MetadataIndexRepository, SqliteMetadataIndexRepository};
-use library_core::model::{ItemKind, LibraryItem, MediaProbe, ProgressSource};
+use library_core::model::{ItemKind, LibraryItem, MediaProbe, NsfwState, ProgressSource};
 use library_core::plugin::{PluginRegistryRepository, SqlitePluginRegistryRepository};
 use library_core::progress::{ProgressRepository, SqliteProgressRepository};
 use library_core::repo::{LibraryRepository, SqliteRepository};
@@ -36,10 +36,10 @@ use crate::dto::{
     AccountDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto, BatchRefreshDto,
     CacheClearDto, CacheStatsDto, CollectionDto, ConflictDto, DeleteItemDto, GameBindingDto,
     GameStatusDto, ImportReportDto, ImportedItemDto, ItemDetailDto, ItemSummaryDto,
-    MediaSummaryDto, MetadataCacheDto, PluginDto, PluginEntryDto, PluginInvocationDto,
-    PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto, PullReportDto, PushReportDto,
-    ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto, SubjectSearchHitDto,
-    SyncQueueDto, SyncStatsDto, UpdateCheckDto,
+    MediaSummaryDto, MetadataCacheDto, NsfwRescanDto, PluginDto, PluginEntryDto,
+    PluginInvocationDto, PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto,
+    PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
+    SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
 use crate::settings::{
@@ -1187,6 +1187,8 @@ impl Services {
                 subject_id,
             )
             .await?;
+        // 元数据刚落盘，顺手判定一次成人内容标记（已判定的不会被动）。
+        self.apply_nsfw_from_cache(&item);
         Ok(MetadataCacheDto {
             subject_id,
             cached_path: path.to_string_lossy().to_string(),
@@ -1768,7 +1770,12 @@ impl Services {
                 "插件 {id} 未声明 read:library 权限"
             )));
         }
-        self.list_items(None)
+        let mut items = self.list_items(None)?;
+        // 插件面板同样是「屏幕上看得见的地方」，跟着隐藏设置走。
+        if self.hide_nsfw() {
+            items.retain(|item| item.nsfw != NsfwState::Adult);
+        }
+        Ok(items)
     }
 
     /// 宿主 API：插件发事件（需 emit:events），统一走主干道。
@@ -2080,8 +2087,11 @@ impl Services {
                 return Err(AppError::Sync(bangumi_sync::SyncError::Api(error)));
             }
         }
+        let hide_nsfw = self.hide_nsfw();
         Ok(hits
             .into_iter()
+            // 开关打开时不返回成人条目：搜索面板里的封面本身就会暴露内容。
+            .filter(|hit| !(hide_nsfw && hit.nsfw))
             .map(|hit| SubjectSearchHitDto {
                 id: hit.id,
                 name: hit.name,
@@ -2290,6 +2300,98 @@ impl Services {
                 }
             }
             Err(err) => tracing::warn!(error = %err, "退出前刷新播放进度失败"),
+        }
+    }
+
+    // ---- 成人内容标记（NSFW） ----
+
+    /// 是否隐藏成人内容条目。读不到设置时按「隐藏」处理。
+    pub fn hide_nsfw(&self) -> bool {
+        self.settings
+            .load()
+            .map(|settings| settings.hide_nsfw)
+            .unwrap_or(true)
+    }
+
+    /// 人工裁定某个条目是否成人内容。人工结果不会被后续自动判定覆盖。
+    pub fn set_item_nsfw(&self, id: &str, state: NsfwState) -> ApiResult<ItemSummaryDto> {
+        let item = self.repo.set_nsfw(id, state)?;
+        tracing::info!(item = %item.id, state = state.as_str(), "人工设置成人内容标记");
+        Ok(self.to_summary(&item))
+    }
+
+    /// 待人工裁定的条目：只有「未判定」的才需要选。
+    ///
+    /// 已经由元数据自动判定的（safe / adult）不再出现在列表里，
+    /// 否则用户要在一堆已经处理好的条目里翻找。
+    pub fn nsfw_candidates(&self) -> ApiResult<Vec<ItemSummaryDto>> {
+        let mut items: Vec<ItemSummaryDto> = self
+            .list_items(None)?
+            .into_iter()
+            .filter(|item| item.nsfw == NsfwState::Unknown)
+            .collect();
+        items.sort_by(|left, right| left.title.cmp(&right.title));
+        Ok(items)
+    }
+
+    /// 用**已缓存**的 subject.json 重新判定成人内容，不联网。
+    ///
+    /// 只处理「未判定」的条目：人工裁定与已判定的一律不动。
+    /// 老库里的条目都靠这一步补判，否则永远是 unknown、永远留在候选列表里。
+    pub fn rescan_nsfw(&self) -> ApiResult<NsfwRescanDto> {
+        let mut report = NsfwRescanDto::default();
+        for item in self.repo.list_items(None)? {
+            if item.nsfw != NsfwState::Unknown {
+                report.skipped += 1;
+                continue;
+            }
+            let Some(subject_id) = item.bangumi_subject_id else {
+                report.unmatched += 1;
+                continue;
+            };
+            let settings = self.settings.load()?;
+            let cache = MetadataCache::new(settings.metadata_cache_dir);
+            let Some(state) = nsfw_from_subject_file(&cache.subject_file(subject_id)) else {
+                // 还没缓存过元数据，无从判定。
+                report.unmatched += 1;
+                continue;
+            };
+            self.repo.set_nsfw(&item.id, state)?;
+            match state {
+                NsfwState::Adult => report.adult += 1,
+                _ => report.safe += 1,
+            }
+        }
+        tracing::info!(
+            adult = report.adult,
+            safe = report.safe,
+            skipped = report.skipped,
+            unmatched = report.unmatched,
+            "成人内容标记重新判定完成"
+        );
+        Ok(report)
+    }
+
+    /// 依据已缓存的元数据自动判定（仅在未判定时写入）。
+    fn apply_nsfw_from_cache(&self, item: &LibraryItem) {
+        if item.nsfw != NsfwState::Unknown {
+            return;
+        }
+        let Some(subject_id) = item.bangumi_subject_id else {
+            return;
+        };
+        let Ok(settings) = self.settings.load() else {
+            return;
+        };
+        let cache = MetadataCache::new(settings.metadata_cache_dir);
+        let Some(state) = nsfw_from_subject_file(&cache.subject_file(subject_id)) else {
+            return;
+        };
+        match self.repo.set_nsfw(&item.id, state) {
+            Ok(_) => {
+                tracing::info!(item = %item.id, state = state.as_str(), "自动判定成人内容标记")
+            }
+            Err(err) => tracing::warn!(item = %item.id, error = %err, "写入成人内容标记失败"),
         }
     }
 
@@ -2518,6 +2620,7 @@ impl Services {
                 .map(|path| path.to_string_lossy().to_string()),
             default_plugins_dir: self.default_plugins_dir.to_string_lossy().to_string(),
             close_to_tray: settings.close_to_tray,
+            hide_nsfw: settings.hide_nsfw,
         }
     }
 }
@@ -2599,10 +2702,57 @@ fn summary_from(item: &LibraryItem, probe: &MediaProbe) -> ItemSummaryDto {
         collection_status: item.collection_status,
         rating: item.rating,
         collection_updated_at: item.collection_updated_at.clone(),
+        nsfw: item.nsfw,
         media: MediaSummaryDto {
             file_count: probe.file_count,
             episode_hint: probe.episode_hint.clone(),
         },
+    }
+}
+
+/// Bangumi 没标 `nsfw`、但标签能看出来的成人向标记。
+const NSFW_TAGS: &[&str] = &[
+    "r18",
+    "18禁",
+    "18+",
+    "エロ",
+    "成人向",
+    "里番",
+    "抜きゲー",
+    "nsfw",
+    "アダルト",
+    "性的描写",
+];
+
+/// 读缓存的 subject.json 判定成人内容；文件不存在或解析失败时返回 None（保持未判定）。
+fn nsfw_from_subject_file(path: &Path) -> Option<NsfwState> {
+    let raw = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    Some(nsfw_from_subject_json(&value))
+}
+
+/// 判定规则：`nsfw == true` 直接成人；否则看标签；
+/// 都没有则算正常——能拿到元数据就说明这条已经被看过一遍了。
+fn nsfw_from_subject_json(value: &serde_json::Value) -> NsfwState {
+    if value.get("nsfw").and_then(serde_json::Value::as_bool) == Some(true) {
+        return NsfwState::Adult;
+    }
+    let tagged = value
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|tag| tag.get("name").and_then(serde_json::Value::as_str))
+                .any(|name| {
+                    let lower = name.to_lowercase();
+                    NSFW_TAGS.iter().any(|mark| lower.contains(mark))
+                })
+        })
+        .unwrap_or(false);
+    if tagged {
+        NsfwState::Adult
+    } else {
+        NsfwState::Safe
     }
 }
 
@@ -2688,6 +2838,26 @@ mod tests {
         services.scan().expect("scan");
         let id = services.list_items(None).expect("list")[0].id.clone();
         (show, id)
+    }
+
+    #[test]
+    fn nsfw_judgement_prefers_flag_then_tags() {
+        let flagged = serde_json::json!({ "nsfw": true, "tags": [] });
+        assert_eq!(nsfw_from_subject_json(&flagged), NsfwState::Adult);
+
+        // Bangumi 漏标 nsfw 时靠标签兜底（galgame 常见）。
+        let tagged = serde_json::json!({
+            "nsfw": false,
+            "tags": [{ "name": "R18" }, { "name": "Galgame" }]
+        });
+        assert_eq!(nsfw_from_subject_json(&tagged), NsfwState::Adult);
+
+        let plain = serde_json::json!({ "nsfw": false, "tags": [{ "name": "TV" }] });
+        assert_eq!(nsfw_from_subject_json(&plain), NsfwState::Safe);
+
+        // 没有 tags 字段也不能判成成人。
+        let bare = serde_json::json!({ "nsfw": false });
+        assert_eq!(nsfw_from_subject_json(&bare), NsfwState::Safe);
     }
 
     #[test]
@@ -2832,6 +3002,7 @@ mod tests {
                 player_args: Some("\"{file}\" /seek={seconds}".into()),
                 plugins_dir: None,
                 close_to_tray: true,
+                hide_nsfw: true,
             })
             .expect("player");
 
@@ -3383,6 +3554,7 @@ mod tests {
                     name: "Test Show".into(),
                     name_cn: Some("测试番".into()),
                     score: None,
+                    nsfw: false,
                 }])
                 .with_cloud_collection(CloudCollection {
                     subject_id: 400602,
@@ -3429,6 +3601,7 @@ mod tests {
                 name: "完全不相干".into(),
                 name_cn: Some("毫不相干".into()),
                 score: None,
+                nsfw: false,
             }]),
         );
         let services = services_with_client(&base, client);
@@ -3453,6 +3626,7 @@ mod tests {
                 name: "White Album 2".into(),
                 name_cn: Some("白色相簿2".into()),
                 score: Some(8.1),
+                nsfw: false,
             }]),
         );
         let services = services_with_client(&base, client);

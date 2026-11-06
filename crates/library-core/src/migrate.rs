@@ -26,6 +26,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "0003_loose_files",
         sql: include_str!("../migrations/0003_loose_files.sql"),
     },
+    Migration {
+        version: 4,
+        name: "0004_nsfw",
+        sql: include_str!("../migrations/0004_nsfw.sql"),
+    },
 ];
 
 /// 读取当前 schema 版本（`PRAGMA user_version`）。
@@ -66,8 +71,10 @@ mod tests {
     #[test]
     fn migration_is_repeatable_and_keeps_data() {
         let db = Db::open_in_memory().expect("db");
-        assert_eq!(db.migrate().expect("first"), 3);
-        assert_eq!(db.migrate().expect("second"), 3);
+        // 不写死版本号：新增迁移时这行不该跟着改，只关心「跑到最新且可重复」。
+        let latest = super::MIGRATIONS.last().expect("至少一条迁移").version;
+        assert_eq!(db.migrate().expect("first"), latest);
+        assert_eq!(db.migrate().expect("second"), latest);
 
         db.with_conn(|conn| {
             conn.execute(
@@ -78,7 +85,7 @@ mod tests {
         })
         .expect("insert");
 
-        assert_eq!(db.migrate().expect("third"), 3);
+        assert_eq!(db.migrate().expect("third"), latest);
         let value: String = db
             .with_conn(|conn| {
                 Ok(conn.query_row("SELECT value FROM app_settings", [], |r| r.get(0))?)

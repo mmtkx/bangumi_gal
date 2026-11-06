@@ -1675,3 +1675,28 @@ tr.row:hover .row-quick,
 tr.row:focus-within .row-quick {
   opacity: 1;
 }
+
+/* NSFW 待裁定列表：条目可能很多，限制高度并内部滚动。 */
+.nsfw-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.nsfw-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.nsfw-row:last-child {
+  border-bottom: none;
+}

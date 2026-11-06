@@ -90,6 +90,9 @@ pub struct SubjectSearchHit {
     /// Bangumi 站内评分（0-10），不代表匹配度。
     #[serde(default)]
     pub score: Option<f64>,
+    /// 是否为成人向条目。搜索请求里已放行 nsfw，由调用方决定是否过滤。
+    #[serde(default)]
+    pub nsfw: bool,
 }
 
 /// 推送收藏状态+评分的载荷，序列化后存入 `sync_queue.payload_json`。

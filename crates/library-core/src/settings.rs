@@ -27,6 +27,9 @@ pub mod keys {
 
     /// 关闭主窗口时是否留驻托盘（`1` 留驻 / `0` 直接退出）；缺省为留驻。
     pub const CLOSE_TO_TRAY: &str = "close_to_tray";
+
+    /// 是否隐藏成人内容条目（`0` 显示 / `1` 隐藏）；缺省为隐藏。
+    pub const HIDE_NSFW: &str = "hide_nsfw";
 }
 
 /// 键值设置存储的抽象。library-core 只负责落库，不做业务校验。
