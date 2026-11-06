@@ -2563,10 +2563,27 @@ impl Services {
     }
 
     /// 探测失败不应让列表/详情整体失败：记录告警并退化为空媒体信息。
+    /// 绑定条目在 Bangumi 上的总集数，用于校正分季集号偏移。
+    ///
+    /// 只读本地缓存：探测是高频路径（列表每次刷新都会跑一遍），
+    /// 不能为了一个数字去发网络请求。没绑定或没缓存时返回 None。
+    fn first_season_episodes(&self, item: &LibraryItem) -> Option<u32> {
+        let subject_id = item.bangumi_subject_id?;
+        let settings = self.settings.load().ok()?;
+        let cache = MetadataCache::new(settings.metadata_cache_dir);
+        let raw = std::fs::read(cache.subject_file(subject_id)).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        episode_count(&value)
+    }
+
     fn probe(&self, item: &LibraryItem) -> MediaProbe {
         let folder = PathBuf::from(&item.folder_path);
         let result = match item.kind {
-            ItemKind::Anime => self.anime.probe(&folder, item.file_filter.as_deref()),
+            ItemKind::Anime => {
+                let hint = self.first_season_episodes(item);
+                self.anime
+                    .probe_with_hint(&folder, item.file_filter.as_deref(), hint)
+            }
             ItemKind::Game => self.game.probe(&folder),
         };
         match result {
@@ -2708,6 +2725,18 @@ fn summary_from(item: &LibraryItem, probe: &MediaProbe) -> ItemSummaryDto {
             episode_hint: probe.episode_hint.clone(),
         },
     }
+}
+
+/// 从 subject.json 取总集数；`eps` 缺失时退回 `total_episodes`。
+fn episode_count(value: &serde_json::Value) -> Option<u32> {
+    for key in ["eps", "total_episodes"] {
+        if let Some(count) = value.get(key).and_then(serde_json::Value::as_u64) {
+            if count > 0 {
+                return u32::try_from(count).ok();
+            }
+        }
+    }
+    None
 }
 
 /// Bangumi 没标 `nsfw`、但标签能看出来的成人向标记。
