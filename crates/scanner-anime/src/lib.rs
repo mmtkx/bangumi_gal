@@ -15,7 +15,7 @@
 mod media;
 mod title;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 pub use media::{episode_hint, is_container_dir, is_video_file, MAX_PROBE_FILES};
@@ -342,6 +342,9 @@ impl AnimeScanner {
             .collect();
         let (mut files, seasons): (Vec<MediaFile>, Vec<Option<u32>>) = entries.into_iter().unzip();
 
+        // 有些压制组从 `00` 起编；先整体 +1，别让第 0 集被当成解析失败顺延到末尾。
+        shift_zero_based_episodes(&mut files);
+
         // 多季合并成一个条目时，先把各季集号挪到互不重叠的区间，否则 S01E05 与 S02E05 会写同一行进度。
         apply_season_offsets(&mut files, &seasons, first_season_eps);
 
@@ -427,6 +430,35 @@ fn normalize_groups(files: &mut [MediaFile]) {
 ///
 /// 为什么不能只靠「同号去重」：`S01E05` 与 `S02E05` 谁是第 5 集没有正确答案，
 /// 去重只能按文件名排序猜；而分季的集号本身是可靠的，按季偏移才不会被猜错。
+/// 从 `00` 起编的压制组：检测到第 0 集就把整组集号 +1。
+///
+/// `[00]` 是合法集号而不是「解析失败」——若不处理，它会被顺延到最大集号之后，
+/// 排在整部番末尾，观看顺序和续播位置全错。
+fn shift_zero_based_episodes(files: &mut [MediaFile]) {
+    // 按来源目录各自判断：主目录从 00 起编，不代表另一个目录也从 00 起编。
+    // 一并处理会把没写 00 的目录整体推后一位（`[01]` 变第 2 集），正是之前出错的原因。
+    let mut zero_groups: BTreeSet<Option<String>> = BTreeSet::new();
+    for file in files.iter() {
+        if file.special {
+            continue;
+        }
+        if file.episode == Some(0) {
+            zero_groups.insert(file.group.clone());
+        }
+    }
+    if zero_groups.is_empty() {
+        return;
+    }
+    for file in files.iter_mut() {
+        if file.special || !zero_groups.contains(&file.group) {
+            continue;
+        }
+        if let Some(episode) = file.episode {
+            file.episode = Some(episode.saturating_add(1));
+        }
+    }
+}
+
 /// 允许用 Bangumi 集数覆盖磁盘最大集号的最大差值（约一季）。
 /// 超过这个差值就认为拿到的是系列级集数，不能当单季基准。
 const MISSING_EPISODE_TOLERANCE: u32 = 12;
@@ -915,6 +947,43 @@ mod tests {
         let episodes: Vec<Option<u32>> = probe.files.iter().map(|file| file.episode).collect();
         assert_eq!(episodes, [Some(1), Some(2), Some(3), Some(4)]);
         assert_eq!(probe.episode_hint.as_deref(), Some("E01–E04"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_handles_zero_based_numbering_and_bracketed_specials() {
+        let root = temp_root("probe-zero-based");
+        let show = root.join("Show");
+        // 从 00 起编：00 就是第一集，后续整体后移。
+        touch(&show, "[G][Show][00][1080P].mkv");
+        touch(&show, "[G][Show][01][1080P].mkv");
+        touch(&show, "[G][Show][09][1080P].mkv");
+        // 文件名里带 [OVA] 的是附属内容，不能占第 10 集的位置。
+        touch(&show, "[G][Show][10][OVA][1080P].mkv");
+        // 附属目录里的同号文件：目录名不在白名单时曾被当成正片，还会被主目录的 00 带着 +1。
+        touch(&show.join("特典映像"), "[G][Show][01][1080P].mkv");
+        touch(&show.join("图集"), "[G][Show][Images][1080P].mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let probe = scanner.probe(&show, None).expect("probe");
+
+        let pairs: Vec<(Option<u32>, bool)> = probe
+            .files
+            .iter()
+            .map(|file| (file.episode, file.special))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                (Some(1), false),
+                (Some(2), false),
+                (Some(10), false),
+                (Some(11), true),
+                (Some(12), true),
+                (Some(13), true),
+            ]
+        );
 
         fs::remove_dir_all(root).ok();
     }

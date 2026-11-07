@@ -36,6 +36,10 @@ const CONTAINER_DIR_NAMES: &[&str] = &[
     "menu",
     "scan",
     "scans",
+    "image",
+    "images",
+    "picture",
+    "pictures",
     "cd",
     "cds",
     "sub",
@@ -51,6 +55,21 @@ const CONTAINER_DIR_NAMES: &[&str] = &[
     "音乐",
     "ost",
     "原声",
+];
+
+/// 中文目录名用「包含」匹配：`特典映像`、`映像特典`、`特典盘` 都能命中「特典」。
+///
+/// 只放足够特异的词，避免把作品名误判成附属目录（例如整词 `映像` 就会误伤「映像研」）。
+const CONTAINER_NAME_CONTAINS: &[&str] = &[
+    "特典",
+    "图集",
+    "插画",
+    "插图",
+    "扫图",
+    "设定集",
+    "原画集",
+    "字幕",
+    "音乐",
 ];
 
 /// 相对条目目录的文件（`relative` 用 `/` 分隔，跨平台展示一致）。
@@ -126,9 +145,17 @@ pub fn is_container_dir(path: &Path) -> bool {
 
 fn is_container_name(name: &str) -> bool {
     let normalized = normalize_dir_name(name);
-    CONTAINER_DIR_NAMES
+    if CONTAINER_DIR_NAMES
         .iter()
         .any(|candidate| *candidate == normalized)
+    {
+        return true;
+    }
+    // 中文目录名很少恰好等于某个固定词（`特典映像`、`映像特典`、`图集` 都可能），
+    // 用「包含」判断；拉丁名仍走精确匹配，避免 `Images` 之外的意外命中。
+    CONTAINER_NAME_CONTAINS
+        .iter()
+        .any(|marker| normalized.contains(marker))
 }
 
 /// 相对路径是否位于附属内容目录之下（`SPs/01.mkv`、`特典/NCOP 2.mkv`）。
@@ -137,8 +164,32 @@ fn is_container_name(name: &str) -> bool {
 /// （`SP 01`、`NCOP 02`），与正片集号撞车后会把进度写坏，因此这些文件不采信解析结果。
 pub fn is_special_path(relative: &str) -> bool {
     let mut parts: Vec<&str> = relative.split('/').collect();
-    parts.pop();
-    parts.iter().any(|part| is_container_name(part))
+    let Some(file_name) = parts.pop() else {
+        return false;
+    };
+    if parts.iter().any(|part| is_container_name(part)) {
+        return true;
+    }
+    // 文件名里的方括号标记同样说明是附属内容：`[10][OVA][1080P].mkv` 里的 `[OVA]`
+    // 不该被当成第 10 集去占正片的集号。只看方括号内容，避免误伤标题里带 ova 字样的正片。
+    bracket_contents(file_name)
+        .iter()
+        .any(|inner| is_container_name(inner))
+}
+
+/// 取出文件名里所有方括号/中文方括号的内容。
+fn bracket_contents(name: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = name;
+    while let Some(start) = rest.find(['[', '【']) {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find([']', '】']) else {
+            break;
+        };
+        out.push(&after[..end]);
+        rest = &after[end + 1..];
+    }
+    out
 }
 
 /// 跳过隐藏目录与系统目录，避免扫描回收站、卷信息目录。
