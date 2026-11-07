@@ -33,6 +33,8 @@ app-services = { path = "crates/app-services" }
 tauri-plugin-single-instance = "2"
 # 官方更新器：负责验签、下载、静默安装。签名校验不可关闭，公钥见 tauri.conf.json。
 tauri-plugin-updater = "2"
+# 系统通知：首次关窗隐藏到托盘时提示一次，避免用户以为程序卡死。
+tauri-plugin-notification = "2"
 
 tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-build = { version = "2.7", features = [] }

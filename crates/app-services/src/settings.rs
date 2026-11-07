@@ -281,6 +281,38 @@ impl SettingsService {
         Ok(())
     }
 
+    /// 老库的成人内容补判是否已经做过。
+    pub fn nsfw_backfill_done(&self) -> bool {
+        self.store
+            .get(keys::NSFW_BACKFILL_DONE)
+            .ok()
+            .flatten()
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false)
+    }
+
+    /// 是否已经提示过「关窗会隐藏到托盘」。
+    pub fn tray_hint_shown(&self) -> bool {
+        self.store
+            .get(keys::TRAY_HINT_SHOWN)
+            .ok()
+            .flatten()
+            .map(|value| value.trim() == "1")
+            .unwrap_or(false)
+    }
+
+    /// 记录已经提示过（只提示一次）。
+    pub fn mark_tray_hint_shown(&self) -> ApiResult<()> {
+        self.store.set(keys::TRAY_HINT_SHOWN, "1")?;
+        Ok(())
+    }
+
+    /// 记录补判已完成。写失败不致命，最多下次启动再跑一遍。
+    pub fn mark_nsfw_backfill_done(&self) -> ApiResult<()> {
+        self.store.set(keys::NSFW_BACKFILL_DONE, "1")?;
+        Ok(())
+    }
+
     /// 内置应用构建下清理历史遗留的用户凭据。
     ///
     /// 旧版本允许用户填自己的 App；内置后这些值已无意义，

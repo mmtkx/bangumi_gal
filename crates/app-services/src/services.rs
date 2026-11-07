@@ -264,6 +264,33 @@ impl Services {
         tauri::async_runtime::spawn(Self::run_startup_pull(Arc::clone(self)));
         // 播放会话结束后把「看过这一集」写入推送队列。
         tauri::async_runtime::spawn(Self::run_progress_sync(Arc::clone(self)));
+        // 0004 迁移之后，老库所有条目都是 unknown：启动时按已有缓存补判一次。
+        tauri::async_runtime::spawn(Self::run_nsfw_backfill(Arc::clone(self)));
+    }
+
+    /// 老库的一次性成人内容补判（不联网，只读本地 subject.json）。
+    ///
+    /// 只跑一次：做完打标记，之后新增的绑定由 `cache_metadata` 触发判定覆盖。
+    async fn run_nsfw_backfill(services: Arc<Self>) {
+        if services.settings.nsfw_backfill_done() {
+            return;
+        }
+        let worker = Arc::clone(&services);
+        match tauri::async_runtime::spawn_blocking(move || worker.rescan_nsfw()).await {
+            Ok(Ok(report)) => {
+                tracing::info!(
+                    adult = report.adult,
+                    safe = report.safe,
+                    unmatched = report.unmatched,
+                    "启动补判成人内容标记完成"
+                );
+                if let Err(err) = services.settings.mark_nsfw_backfill_done() {
+                    tracing::warn!(error = %err, "记录成人内容补判标记失败");
+                }
+            }
+            Ok(Err(err)) => tracing::warn!(error = %err, "启动补判成人内容标记失败"),
+            Err(err) => tracing::warn!(error = %err, "成人内容补判任务异常结束"),
+        }
     }
 
     /// 会话结束时的入队：时长为 0 表示没看成，不推送。
@@ -2392,6 +2419,18 @@ impl Services {
                 tracing::info!(item = %item.id, state = state.as_str(), "自动判定成人内容标记")
             }
             Err(err) => tracing::warn!(item = %item.id, error = %err, "写入成人内容标记失败"),
+        }
+    }
+
+    /// 是否已经提示过「关窗只是隐藏到托盘」。
+    pub fn tray_hint_shown(&self) -> bool {
+        self.settings.tray_hint_shown()
+    }
+
+    /// 记录已提示过托盘的说明。
+    pub fn mark_tray_hint_shown(&self) {
+        if let Err(err) = self.settings.mark_tray_hint_shown() {
+            tracing::warn!(error = %err, "记录托盘提示标记失败");
         }
     }
 

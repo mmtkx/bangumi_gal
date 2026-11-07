@@ -63,7 +63,8 @@
   "plugins": {
     "updater": {
       "endpoints": ["https://github.com/mmtkx/bangumi_gal/releases/latest/download/latest.json"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMEI5NEJDNDBFMzk0QjEKUldTeGxPTkF2SlFML0FyTXA3OTBPSFp3RnpGcHprNU5GK1Y5K3BaTGNFVkNnYzl6Mmg1dGVZMmUK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZDMEI5NEJDNDBFMzk0QjEKUldTeGxPTkF2SlFML0FyTXA3OTBPSFp3RnpGcHprNU5GK1Y5K3BaTGNFVkNnYzl6Mmg1dGVZMmUK",
+      "requireSignedVersion": true
     }
   }
 }

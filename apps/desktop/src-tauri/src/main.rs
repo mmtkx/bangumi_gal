@@ -27,6 +27,21 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// 首次隐藏到托盘时的系统通知。失败不影响主流程。
+fn notify_tray_hint(app: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let result = app
+        .notification()
+        .builder()
+        .title("LAGM 仍在后台运行")
+        .body("窗口已隐藏到托盘。左键托盘图标可唤回，右键可退出。")
+        .show();
+    if let Err(err) = result {
+        // 系统关掉了通知权限、或通知服务不可用时走到这里，属正常情况。
+        tracing::info!(error = %err, "托盘提示通知未能送达");
+    }
+}
+
 /// 托盘图标与菜单：左键唤回窗口，菜单提供「显示」与「退出」。
 ///
 /// 没有托盘就没有「留驻」的意义——窗口一隐藏，用户就再也找不到应用了，
@@ -95,6 +110,7 @@ fn main() {
         // 更新器：端点与公钥在 tauri.conf.json 的 plugins.updater 里，
         // 私钥只在打包时通过 TAURI_SIGNING_PRIVATE_KEY 提供，绝不进仓库。
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app
@@ -120,6 +136,7 @@ fn main() {
                 .get_webview_window("main")
                 .ok_or_else(|| std::io::Error::other("找不到主窗口"))?;
             let closing_window = window.clone();
+            let close_handle = app.handle().clone();
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                     if close_services.close_to_tray() {
@@ -128,6 +145,12 @@ fn main() {
                             tracing::warn!(error = %err, "隐藏主窗口失败");
                         }
                         tracing::info!("主窗口已隐藏，应用留驻托盘");
+                        // 第一次隐藏时给一条系统通知：否则用户会以为程序已经关了（或卡死），
+                        // 之后再想找回来只能靠托盘图标。只提示一次。
+                        if !close_services.tray_hint_shown() {
+                            notify_tray_hint(&close_handle);
+                            close_services.mark_tray_hint_shown();
+                        }
                     }
                 }
             });
