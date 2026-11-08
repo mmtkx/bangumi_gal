@@ -21,14 +21,14 @@ pub use commands::{
     active_sessions, app_version, auto_match, bangumi_account, bangumi_authorize,
     bangumi_complete_manual, bangumi_logout, bangumi_status, bind_bangumi_subject, cache_metadata,
     check_update, clear_items, clear_metadata_cache, delete_item, discard_sync_entry, game_status,
-    get_item, get_settings, item_cover, list_conflicts, list_exe_files, list_items, list_progress,
-    list_subdirs, list_sync_queue, log_location, metadata_cache_stats, open_in_explorer,
-    open_log_dir, play_episode, play_next_episode, plugin_emit, plugin_install, plugin_invoke,
-    plugin_list, plugin_read_items, plugin_set_enabled, plugin_ui_entry, plugin_ui_unloaded,
-    plugin_uninstall, pull_item_now, push_pending, refresh_metadata_batch, resolve_conflicts,
-    running_games, save_bangumi_config, save_settings, scan_library, search_bangumi,
-    set_collection, set_game_binding, set_progress, start_game, sync_pull, sync_stats, trash_items,
-    ui_ready,
+    get_item, get_settings, install_update, item_cover, list_conflicts, list_exe_files, list_items,
+    list_progress, list_subdirs, list_sync_queue, log_location, metadata_cache_stats,
+    open_in_explorer, open_log_dir, play_episode, play_next_episode, plugin_emit, plugin_install,
+    plugin_invoke, plugin_list, plugin_read_items, plugin_set_enabled, plugin_ui_entry,
+    plugin_ui_unloaded, plugin_uninstall, pull_item_now, push_pending, refresh_metadata_batch,
+    resolve_conflicts, running_games, save_bangumi_config, save_settings, scan_library,
+    search_bangumi, set_collection, set_game_binding, set_progress, start_game, sync_pull,
+    sync_stats, trash_items, ui_ready,
 };
 pub use delete::DeleteMode;
 pub use error::{ApiResult, AppError};

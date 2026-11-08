@@ -11,7 +11,7 @@ use launcher::{Launcher, RunningGame};
 use library_core::binding::SqliteGameBindingRepository;
 use library_core::db::Db;
 use library_core::metadata::{MetadataIndexRepository, SqliteMetadataIndexRepository};
-use library_core::model::{ItemKind, LibraryItem, MediaProbe, ProgressSource};
+use library_core::model::{ItemKind, LibraryItem, MediaProbe, NsfwState, ProgressSource};
 use library_core::plugin::{PluginRegistryRepository, SqlitePluginRegistryRepository};
 use library_core::progress::{ProgressRepository, SqliteProgressRepository};
 use library_core::repo::{LibraryRepository, SqliteRepository};
@@ -36,10 +36,10 @@ use crate::dto::{
     AccountDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto, BatchRefreshDto,
     CacheClearDto, CacheStatsDto, CollectionDto, ConflictDto, DeleteItemDto, GameBindingDto,
     GameStatusDto, ImportReportDto, ImportedItemDto, ItemDetailDto, ItemSummaryDto,
-    MediaSummaryDto, MetadataCacheDto, PluginDto, PluginEntryDto, PluginInvocationDto,
-    PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto, PullReportDto, PushReportDto,
-    ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto, SubjectSearchHitDto,
-    SyncQueueDto, SyncStatsDto, UpdateCheckDto,
+    MediaSummaryDto, MetadataCacheDto, NsfwRescanDto, PluginDto, PluginEntryDto,
+    PluginInvocationDto, PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto,
+    PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
+    SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
 use crate::settings::{
@@ -264,6 +264,33 @@ impl Services {
         tauri::async_runtime::spawn(Self::run_startup_pull(Arc::clone(self)));
         // 播放会话结束后把「看过这一集」写入推送队列。
         tauri::async_runtime::spawn(Self::run_progress_sync(Arc::clone(self)));
+        // 0004 迁移之后，老库所有条目都是 unknown：启动时按已有缓存补判一次。
+        tauri::async_runtime::spawn(Self::run_nsfw_backfill(Arc::clone(self)));
+    }
+
+    /// 老库的一次性成人内容补判（不联网，只读本地 subject.json）。
+    ///
+    /// 只跑一次：做完打标记，之后新增的绑定由 `cache_metadata` 触发判定覆盖。
+    async fn run_nsfw_backfill(services: Arc<Self>) {
+        if services.settings.nsfw_backfill_done() {
+            return;
+        }
+        let worker = Arc::clone(&services);
+        match tauri::async_runtime::spawn_blocking(move || worker.rescan_nsfw()).await {
+            Ok(Ok(report)) => {
+                tracing::info!(
+                    adult = report.adult,
+                    safe = report.safe,
+                    unmatched = report.unmatched,
+                    "启动补判成人内容标记完成"
+                );
+                if let Err(err) = services.settings.mark_nsfw_backfill_done() {
+                    tracing::warn!(error = %err, "记录成人内容补判标记失败");
+                }
+            }
+            Ok(Err(err)) => tracing::warn!(error = %err, "启动补判成人内容标记失败"),
+            Err(err) => tracing::warn!(error = %err, "成人内容补判任务异常结束"),
+        }
     }
 
     /// 会话结束时的入队：时长为 0 表示没看成，不推送。
@@ -1187,6 +1214,8 @@ impl Services {
                 subject_id,
             )
             .await?;
+        // 元数据刚落盘，顺手判定一次成人内容标记（已判定的不会被动）。
+        self.apply_nsfw_from_cache(&item);
         Ok(MetadataCacheDto {
             subject_id,
             cached_path: path.to_string_lossy().to_string(),
@@ -1768,7 +1797,12 @@ impl Services {
                 "插件 {id} 未声明 read:library 权限"
             )));
         }
-        self.list_items(None)
+        let mut items = self.list_items(None)?;
+        // 插件面板同样是「屏幕上看得见的地方」，跟着隐藏设置走。
+        if self.hide_nsfw() {
+            items.retain(|item| item.nsfw != NsfwState::Adult);
+        }
+        Ok(items)
     }
 
     /// 宿主 API：插件发事件（需 emit:events），统一走主干道。
@@ -2080,8 +2114,11 @@ impl Services {
                 return Err(AppError::Sync(bangumi_sync::SyncError::Api(error)));
             }
         }
+        let hide_nsfw = self.hide_nsfw();
         Ok(hits
             .into_iter()
+            // 开关打开时不返回成人条目：搜索面板里的封面本身就会暴露内容。
+            .filter(|hit| !(hide_nsfw && hit.nsfw))
             .map(|hit| SubjectSearchHitDto {
                 id: hit.id,
                 name: hit.name,
@@ -2276,9 +2313,147 @@ impl Services {
         })
     }
 
-    /// 检查是否有新版本。只读 GitHub Release，不下载、不安装。
-    pub async fn check_update(&self, current_version: &str) -> ApiResult<UpdateCheckDto> {
-        crate::update::check(current_version, self.config_provider.proxy().as_deref()).await
+    /// 退出前把播放进度落一次库。
+    ///
+    /// 进度是每秒轮询写入的，正常退出最多丢不到一秒；这里补最后一跳，
+    /// 顺带覆盖「刚关掉播放器就退出」的情况——那一跳会把会话结束事件发出去。
+    /// 故意不额外入同步队列：半集进度不该被当成「看过」推到云端。
+    pub fn flush_before_exit(&self) {
+        match self.player.check_once() {
+            Ok(finished) => {
+                if !finished.is_empty() {
+                    // 会话结束事件由后台订阅任务入队，给它一点时间跑完再让进程退出。
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "退出前刷新播放进度失败"),
+        }
+    }
+
+    // ---- 成人内容标记（NSFW） ----
+
+    /// 是否隐藏成人内容条目。读不到设置时按「隐藏」处理。
+    pub fn hide_nsfw(&self) -> bool {
+        self.settings
+            .load()
+            .map(|settings| settings.hide_nsfw)
+            .unwrap_or(true)
+    }
+
+    /// 人工裁定某个条目是否成人内容。人工结果不会被后续自动判定覆盖。
+    pub fn set_item_nsfw(&self, id: &str, state: NsfwState) -> ApiResult<ItemSummaryDto> {
+        let item = self.repo.set_nsfw(id, state)?;
+        tracing::info!(item = %item.id, state = state.as_str(), "人工设置成人内容标记");
+        Ok(self.to_summary(&item))
+    }
+
+    /// 待人工裁定的条目：只有「未判定」的才需要选。
+    ///
+    /// 已经由元数据自动判定的（safe / adult）不再出现在列表里，
+    /// 否则用户要在一堆已经处理好的条目里翻找。
+    pub fn nsfw_candidates(&self) -> ApiResult<Vec<ItemSummaryDto>> {
+        let mut items: Vec<ItemSummaryDto> = self
+            .list_items(None)?
+            .into_iter()
+            .filter(|item| item.nsfw == NsfwState::Unknown)
+            .collect();
+        items.sort_by(|left, right| left.title.cmp(&right.title));
+        Ok(items)
+    }
+
+    /// 用**已缓存**的 subject.json 重新判定成人内容，不联网。
+    ///
+    /// 只处理「未判定」的条目：人工裁定与已判定的一律不动。
+    /// 老库里的条目都靠这一步补判，否则永远是 unknown、永远留在候选列表里。
+    pub fn rescan_nsfw(&self) -> ApiResult<NsfwRescanDto> {
+        let mut report = NsfwRescanDto::default();
+        for item in self.repo.list_items(None)? {
+            if item.nsfw != NsfwState::Unknown {
+                report.skipped += 1;
+                continue;
+            }
+            let Some(subject_id) = item.bangumi_subject_id else {
+                report.unmatched += 1;
+                continue;
+            };
+            let settings = self.settings.load()?;
+            let cache = MetadataCache::new(settings.metadata_cache_dir);
+            let Some(state) = nsfw_from_subject_file(&cache.subject_file(subject_id)) else {
+                // 还没缓存过元数据，无从判定。
+                report.unmatched += 1;
+                continue;
+            };
+            self.repo.set_nsfw(&item.id, state)?;
+            match state {
+                NsfwState::Adult => report.adult += 1,
+                _ => report.safe += 1,
+            }
+        }
+        tracing::info!(
+            adult = report.adult,
+            safe = report.safe,
+            skipped = report.skipped,
+            unmatched = report.unmatched,
+            "成人内容标记重新判定完成"
+        );
+        Ok(report)
+    }
+
+    /// 依据已缓存的元数据自动判定（仅在未判定时写入）。
+    fn apply_nsfw_from_cache(&self, item: &LibraryItem) {
+        if item.nsfw != NsfwState::Unknown {
+            return;
+        }
+        let Some(subject_id) = item.bangumi_subject_id else {
+            return;
+        };
+        let Ok(settings) = self.settings.load() else {
+            return;
+        };
+        let cache = MetadataCache::new(settings.metadata_cache_dir);
+        let Some(state) = nsfw_from_subject_file(&cache.subject_file(subject_id)) else {
+            return;
+        };
+        match self.repo.set_nsfw(&item.id, state) {
+            Ok(_) => {
+                tracing::info!(item = %item.id, state = state.as_str(), "自动判定成人内容标记")
+            }
+            Err(err) => tracing::warn!(item = %item.id, error = %err, "写入成人内容标记失败"),
+        }
+    }
+
+    /// 是否已经提示过「关窗只是隐藏到托盘」。
+    pub fn tray_hint_shown(&self) -> bool {
+        self.settings.tray_hint_shown()
+    }
+
+    /// 记录已提示过托盘的说明。
+    pub fn mark_tray_hint_shown(&self) {
+        if let Err(err) = self.settings.mark_tray_hint_shown() {
+            tracing::warn!(error = %err, "记录托盘提示标记失败");
+        }
+    }
+
+    /// 关闭主窗口时是否留驻托盘。读不到设置时按留驻处理。
+    pub fn close_to_tray(&self) -> bool {
+        self.settings
+            .load()
+            .map(|settings| settings.close_to_tray)
+            .unwrap_or(true)
+    }
+
+    /// 检查是否有新版本。优先走官方更新器（可安装），失败退回发布页检查（只能提示）。
+    pub async fn check_update(
+        &self,
+        app: &tauri::AppHandle,
+        current_version: &str,
+    ) -> ApiResult<UpdateCheckDto> {
+        crate::update::check(
+            app,
+            current_version,
+            self.config_provider.proxy().as_deref(),
+        )
+        .await
     }
 
     /// 用系统默认浏览器打开 http(s) 链接。
@@ -2427,10 +2602,27 @@ impl Services {
     }
 
     /// 探测失败不应让列表/详情整体失败：记录告警并退化为空媒体信息。
+    /// 绑定条目在 Bangumi 上的总集数，用于校正分季集号偏移。
+    ///
+    /// 只读本地缓存：探测是高频路径（列表每次刷新都会跑一遍），
+    /// 不能为了一个数字去发网络请求。没绑定或没缓存时返回 None。
+    fn first_season_episodes(&self, item: &LibraryItem) -> Option<u32> {
+        let subject_id = item.bangumi_subject_id?;
+        let settings = self.settings.load().ok()?;
+        let cache = MetadataCache::new(settings.metadata_cache_dir);
+        let raw = std::fs::read(cache.subject_file(subject_id)).ok()?;
+        let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+        episode_count(&value)
+    }
+
     fn probe(&self, item: &LibraryItem) -> MediaProbe {
         let folder = PathBuf::from(&item.folder_path);
         let result = match item.kind {
-            ItemKind::Anime => self.anime.probe(&folder, item.file_filter.as_deref()),
+            ItemKind::Anime => {
+                let hint = self.first_season_episodes(item);
+                self.anime
+                    .probe_with_hint(&folder, item.file_filter.as_deref(), hint)
+            }
             ItemKind::Game => self.game.probe(&folder),
         };
         match result {
@@ -2483,6 +2675,8 @@ impl Services {
                 .plugins_dir
                 .map(|path| path.to_string_lossy().to_string()),
             default_plugins_dir: self.default_plugins_dir.to_string_lossy().to_string(),
+            close_to_tray: settings.close_to_tray,
+            hide_nsfw: settings.hide_nsfw,
         }
     }
 }
@@ -2564,10 +2758,69 @@ fn summary_from(item: &LibraryItem, probe: &MediaProbe) -> ItemSummaryDto {
         collection_status: item.collection_status,
         rating: item.rating,
         collection_updated_at: item.collection_updated_at.clone(),
+        nsfw: item.nsfw,
         media: MediaSummaryDto {
             file_count: probe.file_count,
             episode_hint: probe.episode_hint.clone(),
         },
+    }
+}
+
+/// 从 subject.json 取总集数；`eps` 缺失时退回 `total_episodes`。
+fn episode_count(value: &serde_json::Value) -> Option<u32> {
+    for key in ["eps", "total_episodes"] {
+        if let Some(count) = value.get(key).and_then(serde_json::Value::as_u64) {
+            if count > 0 {
+                return u32::try_from(count).ok();
+            }
+        }
+    }
+    None
+}
+
+/// Bangumi 没标 `nsfw`、但标签能看出来的成人向标记。
+const NSFW_TAGS: &[&str] = &[
+    "r18",
+    "18禁",
+    "18+",
+    "エロ",
+    "成人向",
+    "里番",
+    "抜きゲー",
+    "nsfw",
+    "アダルト",
+    "性的描写",
+];
+
+/// 读缓存的 subject.json 判定成人内容；文件不存在或解析失败时返回 None（保持未判定）。
+fn nsfw_from_subject_file(path: &Path) -> Option<NsfwState> {
+    let raw = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&raw).ok()?;
+    Some(nsfw_from_subject_json(&value))
+}
+
+/// 判定规则：`nsfw == true` 直接成人；否则看标签；
+/// 都没有则算正常——能拿到元数据就说明这条已经被看过一遍了。
+fn nsfw_from_subject_json(value: &serde_json::Value) -> NsfwState {
+    if value.get("nsfw").and_then(serde_json::Value::as_bool) == Some(true) {
+        return NsfwState::Adult;
+    }
+    let tagged = value
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .map(|tags| {
+            tags.iter()
+                .filter_map(|tag| tag.get("name").and_then(serde_json::Value::as_str))
+                .any(|name| {
+                    let lower = name.to_lowercase();
+                    NSFW_TAGS.iter().any(|mark| lower.contains(mark))
+                })
+        })
+        .unwrap_or(false);
+    if tagged {
+        NsfwState::Adult
+    } else {
+        NsfwState::Safe
     }
 }
 
@@ -2653,6 +2906,26 @@ mod tests {
         services.scan().expect("scan");
         let id = services.list_items(None).expect("list")[0].id.clone();
         (show, id)
+    }
+
+    #[test]
+    fn nsfw_judgement_prefers_flag_then_tags() {
+        let flagged = serde_json::json!({ "nsfw": true, "tags": [] });
+        assert_eq!(nsfw_from_subject_json(&flagged), NsfwState::Adult);
+
+        // Bangumi 漏标 nsfw 时靠标签兜底（galgame 常见）。
+        let tagged = serde_json::json!({
+            "nsfw": false,
+            "tags": [{ "name": "R18" }, { "name": "Galgame" }]
+        });
+        assert_eq!(nsfw_from_subject_json(&tagged), NsfwState::Adult);
+
+        let plain = serde_json::json!({ "nsfw": false, "tags": [{ "name": "TV" }] });
+        assert_eq!(nsfw_from_subject_json(&plain), NsfwState::Safe);
+
+        // 没有 tags 字段也不能判成成人。
+        let bare = serde_json::json!({ "nsfw": false });
+        assert_eq!(nsfw_from_subject_json(&bare), NsfwState::Safe);
     }
 
     #[test]
@@ -2796,6 +3069,8 @@ mod tests {
                 player_path: Some("C:\\Windows\\System32\\where.exe".into()),
                 player_args: Some("\"{file}\" /seek={seconds}".into()),
                 plugins_dir: None,
+                close_to_tray: true,
+                hide_nsfw: true,
             })
             .expect("player");
 
@@ -3347,6 +3622,7 @@ mod tests {
                     name: "Test Show".into(),
                     name_cn: Some("测试番".into()),
                     score: None,
+                    nsfw: false,
                 }])
                 .with_cloud_collection(CloudCollection {
                     subject_id: 400602,
@@ -3393,6 +3669,7 @@ mod tests {
                 name: "完全不相干".into(),
                 name_cn: Some("毫不相干".into()),
                 score: None,
+                nsfw: false,
             }]),
         );
         let services = services_with_client(&base, client);
@@ -3417,6 +3694,7 @@ mod tests {
                 name: "White Album 2".into(),
                 name_cn: Some("白色相簿2".into()),
                 score: Some(8.1),
+                nsfw: false,
             }]),
         );
         let services = services_with_client(&base, client);

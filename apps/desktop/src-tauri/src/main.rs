@@ -4,9 +4,90 @@
 use std::sync::Arc;
 
 use app_services::{bridge, commands, Services};
-use tauri::Manager;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager};
 
 mod logging;
+
+/// 把主窗口显示出来并置前。托盘左键、托盘菜单都走这里。
+fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        tracing::warn!("找不到主窗口，无法从托盘唤回");
+        return;
+    };
+    if let Err(err) = window.show() {
+        tracing::warn!(error = %err, "显示主窗口失败");
+    }
+    if let Err(err) = window.unminimize() {
+        tracing::warn!(error = %err, "取消最小化失败");
+    }
+    if let Err(err) = window.set_focus() {
+        tracing::warn!(error = %err, "聚焦主窗口失败");
+    }
+}
+
+/// 首次隐藏到托盘时的系统通知。失败不影响主流程。
+fn notify_tray_hint(app: &AppHandle) {
+    use tauri_plugin_notification::NotificationExt;
+    let result = app
+        .notification()
+        .builder()
+        .title("LAGM 仍在后台运行")
+        .body("窗口已隐藏到托盘。左键托盘图标可唤回，右键可退出。")
+        .show();
+    if let Err(err) = result {
+        // 系统关掉了通知权限、或通知服务不可用时走到这里，属正常情况。
+        tracing::info!(error = %err, "托盘提示通知未能送达");
+    }
+}
+
+/// 托盘图标与菜单：左键唤回窗口，菜单提供「显示」与「退出」。
+///
+/// 没有托盘就没有「留驻」的意义——窗口一隐藏，用户就再也找不到应用了，
+/// 所以托盘与关闭行为总是一起存在，只在关闭那一刻按设置决定是隐藏还是退出。
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+    let mut builder = TrayIconBuilder::with_id("main")
+        .tooltip("LAGM · 本地动画 / 游戏库")
+        // 左键直接唤回窗口更符合直觉，右键才出菜单。
+        .show_menu_on_left_click(false)
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "quit" => {
+                tracing::info!("从托盘退出应用");
+                // 退出前把进度落一次库，别让最后一集的位置停在上一秒。
+                if let Some(services) = app.try_state::<Arc<Services>>() {
+                    services.flush_before_exit();
+                }
+                app.exit(0);
+            }
+            other => tracing::warn!(id = other, "未知的托盘菜单项"),
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    // 托盘沿用软件自己的图标，保证任务栏与托盘一眼能对应上。
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        tracing::warn!("应用没有默认图标，托盘将显示为空白");
+    }
+    builder.build(app)?;
+    Ok(())
+}
 
 fn main() {
     // 日志在拿到 Tauri 路径之前就要可用：目录按 ADR-009 的同级约定自行解析。
@@ -20,6 +101,16 @@ fn main() {
     );
 
     let result = tauri::Builder::default()
+        // 单实例插件必须是第一个注册的：第二次启动时它会在已有实例里回调，
+        // 然后把新进程关掉。没有它，留驻托盘期间双击 exe 就会开出第二个进程抢同一个库。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tracing::info!("检测到应用已在运行，唤回已有窗口");
+            show_main_window(app);
+        }))
+        // 更新器：端点与公钥在 tauri.conf.json 的 plugins.updater 里，
+        // 私钥只在打包时通过 TAURI_SIGNING_PRIVATE_KEY 提供，绝不进仓库。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app
@@ -36,7 +127,35 @@ fn main() {
             let services = Arc::new(services);
             // 游戏进程树与播放会话的常驻轮询任务。
             services.spawn_background_tasks();
-            app.manage(services);
+            let close_services = Arc::clone(&services);
+            app.manage(Arc::clone(&services));
+
+            // 关闭主窗口：留驻模式下只隐藏窗口并阻止关闭，后台轮询继续跑；
+            // 关掉留驻则什么也不做，交给默认行为——最后一个窗口关闭即退出进程。
+            let window = app
+                .get_webview_window("main")
+                .ok_or_else(|| std::io::Error::other("找不到主窗口"))?;
+            let closing_window = window.clone();
+            let close_handle = app.handle().clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    if close_services.close_to_tray() {
+                        api.prevent_close();
+                        if let Err(err) = closing_window.hide() {
+                            tracing::warn!(error = %err, "隐藏主窗口失败");
+                        }
+                        tracing::info!("主窗口已隐藏，应用留驻托盘");
+                        // 第一次隐藏时给一条系统通知：否则用户会以为程序已经关了（或卡死），
+                        // 之后再想找回来只能靠托盘图标。只提示一次。
+                        if !close_services.tray_hint_shown() {
+                            notify_tray_hint(&close_handle);
+                            close_services.mark_tray_hint_shown();
+                        }
+                    }
+                }
+            });
+
+            setup_tray(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -73,6 +192,10 @@ fn main() {
             commands::bangumi_subject_preview,
             commands::open_external,
             commands::check_update,
+            commands::install_update,
+            commands::set_item_nsfw,
+            commands::nsfw_candidates,
+            commands::rescan_nsfw,
             commands::app_version,
             commands::save_bangumi_config,
             commands::bangumi_authorize,

@@ -3,6 +3,8 @@ import { listen } from '@tauri-apps/api/event';
 
 export type ItemKind = 'anime' | 'game';
 
+export type NsfwState = 'unknown' | 'safe' | 'adult';
+
 export interface MediaSummary {
   fileCount: number;
   episodeHint: string | null;
@@ -31,6 +33,8 @@ export interface ItemSummary {
   /** Bangumi 评分 0-10，null 表示未评分。 */
   rating: number | null;
   collectionUpdatedAt: string | null;
+  /** 成人内容标记：未判定 / 正常 / 成人。 */
+  nsfw: NsfwState;
   media: MediaSummary;
 }
 
@@ -75,6 +79,10 @@ export interface Settings {
   bangumiDefaultRedirectUri: string;
   pluginsDir: string | null;
   defaultPluginsDir: string;
+  /** 关闭主窗口时留驻托盘；关闭则直接退出进程。 */
+  closeToTray: boolean;
+  /** 是否隐藏成人内容条目。 */
+  hideNsfw: boolean;
 }
 
 export interface SettingsInput {
@@ -84,6 +92,8 @@ export interface SettingsInput {
   playerPath: string | null;
   playerArgs: string | null;
   pluginsDir: string | null;
+  closeToTray: boolean;
+  hideNsfw: boolean;
 }
 
 export interface DirEntry {
@@ -764,6 +774,37 @@ export interface UpdateCheck {
   releaseUrl: string;
   notes: string | null;
   publishedAt: string | null;
+  /** 可直接下载安装（更新包带签名）；为 false 时只能打开发布页手动下载。 */
+  autoInstall: boolean;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number | null;
+}
+
+// ---- 成人内容标记 ----
+
+export interface NsfwRescan {
+  adult: number;
+  safe: number;
+  skipped: number;
+  unmatched: number;
+}
+
+/** 人工设置条目的成人内容标记。 */
+export function setItemNsfw(id: string, state: NsfwState): Promise<ItemSummary> {
+  return call<ItemSummary>('set_item_nsfw', { id, state });
+}
+
+/** 待人工裁定的条目（只有未判定的会返回）。 */
+export function nsfwCandidates(): Promise<ItemSummary[]> {
+  return call<ItemSummary[]>('nsfw_candidates');
+}
+
+/** 用已缓存的元数据重新判定成人内容，不联网。 */
+export function rescanNsfw(): Promise<NsfwRescan> {
+  return call<NsfwRescan>('rescan_nsfw');
 }
 
 /** 当前应用版本（来自 tauri.conf.json）。 */
@@ -771,9 +812,24 @@ export function appVersion(): Promise<string> {
   return call<string>('app_version');
 }
 
-/** 查询 GitHub 最新 Release。只读版本号，不下载、不安装。 */
+/** 查询是否有新版本。优先走官方更新器（可安装），失败退回发布页检查。 */
 export function checkUpdate(): Promise<UpdateCheck> {
   return call<UpdateCheck>('check_update');
+}
+
+/**
+ * 下载并安装更新（需更新包带签名）。
+ * Windows 上安装器启动后进程会自行退出并重启，这个 Promise 通常不会返回。
+ */
+export function installUpdate(): Promise<void> {
+  return call<void>('install_update');
+}
+
+/** 订阅更新下载进度（独立事件通道，不走主事件总线）。 */
+export async function subscribeUpdateProgress(
+  handler: (progress: UpdateProgress) => void,
+): Promise<() => void> {
+  return listen<UpdateProgress>('update:progress', (event) => handler(event.payload));
 }
 
 /** 秒数转 mm:ss / h:mm:ss，用于进度展示。 */

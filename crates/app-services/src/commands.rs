@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use launcher::RunningGame;
-use library_core::model::ItemKind;
+use library_core::model::{ItemKind, NsfwState};
 use player_adapter::{ActiveSession, PlayingSession};
 use tauri::State;
 
@@ -10,8 +10,8 @@ use crate::dto::{
     AccountDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto, BatchRefreshDto,
     CacheClearDto, CacheStatsDto, CollectionDto, ConflictDto, DeleteItemDto, DirListingDto,
     FileEntryDto, GameStatusDto, ImportReportDto, ItemDetailDto, ItemSummaryDto, MetadataCacheDto,
-    PluginEntryDto, PluginInvocationDto, PluginOverviewDto, ProgressDto, PullReportDto,
-    PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
+    NsfwRescanDto, PluginEntryDto, PluginInvocationDto, PluginOverviewDto, ProgressDto,
+    PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
     SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
@@ -439,8 +439,41 @@ pub async fn check_update(
     services: State<'_, Arc<Services>>,
 ) -> ApiResult<UpdateCheckDto> {
     let version = app.package_info().version.to_string();
+    let handle = app.clone();
     let services = Arc::clone(services.inner());
-    services.check_update(&version).await
+    services.check_update(&handle, &version).await
+}
+
+/// 下载并安装更新。成功时进程会由安装器接管并重启，前端通常收不到返回值。
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> ApiResult<()> {
+    crate::update::install(&app).await
+}
+
+/// 人工设置条目的成人内容标记（`unknown` / `safe` / `adult`）。
+#[tauri::command]
+pub async fn set_item_nsfw(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    state: String,
+) -> ApiResult<ItemSummaryDto> {
+    let services = Arc::clone(services.inner());
+    let state = NsfwState::parse(&state);
+    run_blocking(move || services.set_item_nsfw(&id, state)).await
+}
+
+/// 待人工裁定的条目（只有「未判定」的会返回）。
+#[tauri::command]
+pub async fn nsfw_candidates(services: State<'_, Arc<Services>>) -> ApiResult<Vec<ItemSummaryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.nsfw_candidates()).await
+}
+
+/// 用已缓存的元数据重新判定成人内容，不联网。
+#[tauri::command]
+pub async fn rescan_nsfw(services: State<'_, Arc<Services>>) -> ApiResult<NsfwRescanDto> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.rescan_nsfw()).await
 }
 
 /// 用系统默认浏览器打开链接（只接受 http/https）。

@@ -1,18 +1,16 @@
-//! 检查更新：读 GitHub 上最新的发布版本号，**不下载、不安装任何东西**。
+//! 更新：检查版本 + 下载安装，两个能力分两条链路。
 //!
-//! 为什么不用 Tauri 官方 updater：它要求更新包必须签名且无法关闭校验，
-//! 本项目暂无密钥体系。当前只做「有新版本 → 提示 + 打开下载页」，
-//! 用户手动装安装包，避免为了自动安装引入私钥保管与供应链风险。
+//! **检查**优先用 Tauri 官方更新器：它读的是 release 里的 `latest.json`，不走 GitHub API、
+//! 没有限流，而且拿到的就是可安装的候选。只有在 `latest.json` 不存在或网络异常时才退回
+//! 「GitHub API / 发布页跳转」取 tag —— 那条路只能提示版本，装不了。
 //!
-//! 两条通道，按顺序尝试：
-//! 1. GitHub REST API：信息最全（发布说明、时间），但未认证请求限 60 次/小时/IP，
-//!    走共享代理出口时很容易被别人的流量吃掉配额；
-//! 2. 发布页跳转：请求 `github.com/<repo>/releases/latest`，跟随 302 从最终地址里取 tag。
-//!    不走 API、没有配额，只是拿不到发布说明。
-//!
-//! 有备用通道，限流就退化成「少显示一段发布说明」，而不是整个功能报错。
+//! **安装**只能走官方更新器：它要求更新包必须带签名且校验不可关闭。私钥只在打包时
+//! 通过 `TAURI_SIGNING_PRIVATE_KEY` 提供，公钥写在 `tauri.conf.json`，仓库里没有任何密钥。
 
 use std::time::Duration;
+
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_updater::UpdaterExt;
 
 use crate::dto::UpdateCheckDto;
 use crate::error::{ApiResult, AppError};
@@ -21,6 +19,12 @@ const RELEASES_API: &str = "https://api.github.com/repos/mmtkx/bangumi_gal/relea
 
 /// 访问这个地址会被重定向到 `<repo>/releases/tag/<tag>`。
 const RELEASES_LATEST_PAGE: &str = "https://github.com/mmtkx/bangumi_gal/releases/latest";
+
+/// 发布页地址：更新器不可用时给前端的兜底链接。
+const RELEASES_PAGE: &str = "https://github.com/mmtkx/bangumi_gal/releases/latest";
+
+/// 下载进度事件名（前端直接 `listen` 这个通道，不走主事件总线）。
+const PROGRESS_EVENT: &str = "update:progress";
 
 #[derive(Debug, serde::Deserialize)]
 struct Release {
@@ -32,45 +36,110 @@ struct Release {
     published_at: Option<String>,
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
 /// 查询最新版本并与 `current_version` 比较。
-pub async fn check(current_version: &str, proxy: Option<&str>) -> ApiResult<UpdateCheckDto> {
-    let client = build_client(current_version, proxy)?;
-    match fetch_via_api(&client, current_version).await {
-        Ok(info) => Ok(info),
-        Err(api_reason) => match fetch_via_redirect(&client, current_version).await {
-            Ok(info) => {
-                tracing::debug!(reason = %api_reason, "GitHub API 不可用，改用发布页跳转检查更新");
-                Ok(info)
-            }
-            Err(fallback_reason) => Err(AppError::Update(format!(
-                "{api_reason}（备用通道也失败：{fallback_reason}）"
-            ))),
-        },
-    }
-}
-
-fn build_client(current_version: &str, proxy: Option<&str>) -> ApiResult<reqwest::Client> {
-    let mut builder = reqwest::Client::builder()
-        // 超时给得短：检查更新是锦上添花，不该让设置页转圈十几秒。
-        .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(12))
-        // GitHub API 强制要求 User-Agent。
-        .user_agent(format!("LAGM/{current_version}"));
-    if let Some(proxy) = proxy {
-        let proxy = reqwest::Proxy::all(proxy)
-            .map_err(|err| AppError::Update(format!("代理地址无效：{proxy}（{err}）")))?;
-        builder = builder.proxy(proxy);
-    }
-    builder
-        .build()
-        .map_err(|err| AppError::Update(format!("创建 HTTP 客户端失败：{err}")))
-}
-
-/// 首选通道：REST API，能拿到发布说明与时间。失败时返回一句给用户看的原因。
-async fn fetch_via_api(
-    client: &reqwest::Client,
+pub async fn check(
+    app: &AppHandle,
     current_version: &str,
+    proxy: Option<&str>,
+) -> ApiResult<UpdateCheckDto> {
+    match check_via_updater(app, current_version).await {
+        Ok(Some(info)) => Ok(info),
+        Ok(None) => Ok(UpdateCheckDto {
+            current_version: current_version.to_owned(),
+            latest_version: current_version.to_owned(),
+            has_update: false,
+            release_url: RELEASES_PAGE.to_owned(),
+            notes: None,
+            published_at: None,
+            auto_install: true,
+        }),
+        Err(reason) => {
+            // 没有 latest.json（还没发过带清单的版本）或清单坏了，都会走到这里。
+            tracing::debug!(reason = %reason, "官方更新器不可用，退回发布页检查");
+            let mut info =
+                match fetch_via_api(current_version, proxy).await {
+                    Ok(info) => info,
+                    Err(api_reason) => fetch_via_redirect(current_version, proxy).await.map_err(
+                        |fallback_reason| {
+                            AppError::Update(format!(
+                                "{api_reason}（备用通道也失败：{fallback_reason}）"
+                            ))
+                        },
+                    )?,
+                };
+            // 这条链路只认版本号，装不了。
+            info.auto_install = false;
+            Ok(info)
+        }
+    }
+}
+
+/// 下载并安装更新。Windows 上安装器启动后本进程会自行退出，由 NSIS 重启新版本。
+pub async fn install(app: &AppHandle) -> ApiResult<()> {
+    let updater = app
+        .updater()
+        .map_err(|err| AppError::Update(format!("更新器不可用：{err}")))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|err| AppError::Update(format!("检查更新失败：{err}")))?
+        .ok_or_else(|| AppError::Update("没有可安装的更新".to_owned()))?;
+
+    tracing::info!(version = %update.version, "开始下载更新包");
+    let handle = app.clone();
+    let mut downloaded: u64 = 0;
+    update
+        .download_and_install(
+            move |chunk_length, total| {
+                downloaded = downloaded.saturating_add(chunk_length as u64);
+                let _ = handle.emit(PROGRESS_EVENT, UpdateProgress { downloaded, total });
+            },
+            || tracing::info!("更新包下载完成，交给安装器"),
+        )
+        .await
+        .map_err(|err| AppError::Update(format!("下载或安装失败：{err}")))
+}
+
+/// 官方更新器：读 `latest.json`，得到的版本可以直接安装。
+async fn check_via_updater(
+    app: &AppHandle,
+    current_version: &str,
+) -> Result<Option<UpdateCheckDto>, String> {
+    let updater = app
+        .updater()
+        .map_err(|err| format!("更新器不可用：{err}"))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|err| format!("读取更新清单失败：{err}"))?;
+    let Some(update) = update else {
+        return Ok(None);
+    };
+
+    Ok(Some(UpdateCheckDto {
+        current_version: current_version.to_owned(),
+        latest_version: update.version.clone(),
+        has_update: true,
+        release_url: format!("{RELEASES_PAGE}/tag/v{}", update.version),
+        notes: update.body.clone(),
+        published_at: update.date.map(|date| date.to_string()),
+        auto_install: true,
+    }))
+}
+
+/// 首选兜底通道：REST API，能拿到发布说明与时间。
+async fn fetch_via_api(
+    current_version: &str,
+    proxy: Option<&str>,
 ) -> Result<UpdateCheckDto, String> {
+    let client = build_client(current_version, proxy).map_err(|err| err.to_string())?;
     let response = client
         .get(RELEASES_API)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
@@ -103,14 +172,16 @@ async fn fetch_via_api(
         release_url: release.html_url,
         notes: release.body.filter(|body| !body.trim().is_empty()),
         published_at: release.published_at,
+        auto_install: false,
     })
 }
 
-/// 备用通道：只跟随发布页的重定向取 tag，不需要 API 配额。
+/// 次选兜底通道：只跟随发布页的重定向取 tag，不需要 API 配额。
 async fn fetch_via_redirect(
-    client: &reqwest::Client,
     current_version: &str,
+    proxy: Option<&str>,
 ) -> Result<UpdateCheckDto, String> {
+    let client = build_client(current_version, proxy).map_err(|err| err.to_string())?;
     let response = client
         .get(RELEASES_LATEST_PAGE)
         .send()
@@ -133,7 +204,25 @@ async fn fetch_via_redirect(
         // 这条路拿不到发布说明，界面上那一段自然不显示。
         notes: None,
         published_at: None,
+        auto_install: false,
     })
+}
+
+fn build_client(current_version: &str, proxy: Option<&str>) -> Result<reqwest::Client, AppError> {
+    let mut builder = reqwest::Client::builder()
+        // 超时给得短：检查更新是锦上添花，不该让设置页转圈十几秒。
+        .connect_timeout(Duration::from_secs(6))
+        .timeout(Duration::from_secs(12))
+        // GitHub API 强制要求 User-Agent。
+        .user_agent(format!("LAGM/{current_version}"));
+    if let Some(proxy) = proxy {
+        let proxy = reqwest::Proxy::all(proxy)
+            .map_err(|err| AppError::Update(format!("代理地址无效：{proxy}（{err}）")))?;
+        builder = builder.proxy(proxy);
+    }
+    builder
+        .build()
+        .map_err(|err| AppError::Update(format!("创建 HTTP 客户端失败：{err}")))
 }
 
 /// 从 `https://github.com/o/r/releases/tag/v1.2.3` 里取出 `v1.2.3`。

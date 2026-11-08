@@ -4,12 +4,12 @@ use rusqlite::{params, OptionalExtension, Row};
 
 use crate::db::Db;
 use crate::error::{CoreError, Result};
-use crate::model::{ItemKind, LibraryItem, NewItem, UpsertOutcome};
+use crate::model::{ItemKind, LibraryItem, NewItem, NsfwState, UpsertOutcome};
 use crate::time::now_iso8601;
 
 const ITEM_COLUMNS: &str =
     "id, kind, title, bangumi_subject_id, folder_path, created_at, updated_at, \
-     collection_status, rating, collection_updated_at, file_filter";
+     collection_status, rating, collection_updated_at, file_filter, nsfw";
 
 /// 条目仓储接口。
 ///
@@ -35,6 +35,9 @@ pub trait LibraryRepository: Send + Sync {
         collection_status: Option<i64>,
         rating: Option<i64>,
     ) -> Result<LibraryItem>;
+
+    /// 设置成人内容标记（0004 迁移）。
+    fn set_nsfw(&self, id: &str, state: NsfwState) -> Result<LibraryItem>;
 
     /// 删除条目记录（仅数据库，不动磁盘文件）。关联 progress / game_binding_index 由外键级联清理。
     fn delete_item(&self, id: &str) -> Result<()>;
@@ -85,6 +88,7 @@ fn map_item(row: &Row<'_>) -> rusqlite::Result<LibraryItem> {
         rating: row.get(8)?,
         collection_updated_at: row.get(9)?,
         file_filter: row.get(10)?,
+        nsfw: NsfwState::parse(&row.get::<_, String>(11)?),
     })
 }
 
@@ -235,6 +239,20 @@ impl LibraryRepository for SqliteRepository {
                  SET collection_status = ?2, rating = ?3, collection_updated_at = ?4, updated_at = ?5
                  WHERE id = ?1",
                 params![id, collection_status, rating, now, now],
+            )?;
+            if affected == 0 {
+                return Err(CoreError::ItemNotFound(id.to_owned()));
+            }
+            Self::fetch(conn, id)
+        })
+    }
+
+    fn set_nsfw(&self, id: &str, state: NsfwState) -> Result<LibraryItem> {
+        let now = now_iso8601();
+        self.db.with_conn(|conn| {
+            let affected = conn.execute(
+                "UPDATE library_item SET nsfw = ?2, updated_at = ?3 WHERE id = ?1",
+                params![id, state.as_str(), now],
             )?;
             if affected == 0 {
                 return Err(CoreError::ItemNotFound(id.to_owned()));

@@ -6,8 +6,10 @@ import {
   clearMetadataCache,
   formatBytes,
   getSettings,
+  installUpdate,
   logLocation,
   metadataCacheStats,
+  nsfwCandidates,
   openExternal,
   openLogDir,
   pluginInstall,
@@ -15,14 +17,19 @@ import {
   pluginList,
   pluginSetEnabled,
   pluginUninstall,
+  rescanNsfw,
   saveSettings,
+  setItemNsfw,
+  subscribeUpdateProgress,
   type CacheStats,
+  type ItemSummary,
   type LogLocation,
   type PluginInfo,
   type PluginInvocation,
   type PluginOverview,
   type Settings,
   type UpdateCheck,
+  type UpdateProgress,
 } from '../api';
 import DirectoryPicker from '../components/DirectoryPicker';
 import ExePicker from '../components/ExePicker';
@@ -59,6 +66,13 @@ export default function SettingsPage({ onSaved }: Props) {
   const [pluginsDir, setPluginsDir] = useState('');
   const [playerPath, setPlayerPath] = useState('');
   const [playerArgs, setPlayerArgs] = useState('');
+  const [closeToTray, setCloseToTray] = useState(true);
+  const [hideNsfw, setHideNsfw] = useState(true);
+  // 待人工裁定的条目（只有未判定的会出现在这里）。
+  const [nsfwPending, setNsfwPending] = useState<ItemSummary[]>([]);
+  const [nsfwPicked, setNsfwPicked] = useState<string[]>([]);
+  const [nsfwBusy, setNsfwBusy] = useState(false);
+  const [nsfwNotice, setNsfwNotice] = useState<string | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [plugins, setPlugins] = useState<PluginOverview | null>(null);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
@@ -79,6 +93,9 @@ export default function SettingsPage({ onSaved }: Props) {
   const [update, setUpdate] = useState<UpdateCheck | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  // 下载安装：装完后进程由安装器接管并重启，所以只保留进度与错误两个状态。
+  const [installing, setInstalling] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,6 +109,8 @@ export default function SettingsPage({ onSaved }: Props) {
         setPluginsDir(data.pluginsDir ?? '');
         setPlayerPath(data.playerPath ?? '');
         setPlayerArgs(data.playerArgs);
+        setCloseToTray(data.closeToTray);
+        setHideNsfw(data.hideNsfw);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -152,6 +171,8 @@ export default function SettingsPage({ onSaved }: Props) {
         playerPath: playerPath.trim() === '' ? null : playerPath.trim(),
         playerArgs: playerArgs.trim() === '' ? null : playerArgs.trim(),
         pluginsDir: pluginsDir.trim() === '' ? null : pluginsDir.trim(),
+        closeToTray,
+        hideNsfw,
       });
       setSettings(saved);
       setAnimeRoot(saved.animeRoot ?? '');
@@ -160,6 +181,8 @@ export default function SettingsPage({ onSaved }: Props) {
       setPluginsDir(saved.pluginsDir ?? '');
       setPlayerPath(saved.playerPath ?? '');
       setPlayerArgs(saved.playerArgs);
+      setCloseToTray(saved.closeToTray);
+      setHideNsfw(saved.hideNsfw);
       // 根目录变化会触发后台「扫描 + 自动匹配」，提示里说清楚，免得用户以为要手动点扫描。
       const rootsChanged =
         (settings?.animeRoot ?? null) !== saved.animeRoot ||
@@ -218,11 +241,92 @@ export default function SettingsPage({ onSaved }: Props) {
   }
 
   useEffect(() => {
+    void refreshNsfwPending();
+  }, []);
+
+  useEffect(() => {
     // 版本号单独取，没必要为了显示「当前版本」去打一次 GitHub。
     appVersion()
       .then(setVersion)
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!installing) return;
+    let dispose: (() => void) | null = null;
+    let cancelled = false;
+    void subscribeUpdateProgress((progress) => setUpdateProgress(progress)).then((unlisten) => {
+      if (cancelled) unlisten();
+      else dispose = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [installing]);
+
+  async function handleInstallUpdate() {
+    setInstalling(true);
+    setUpdateProgress(null);
+    setUpdateError(null);
+    try {
+      await installUpdate();
+      // 走到这里说明安装器没有接管进程（非 Windows），提示用户手动重启。
+      setUpdateError(null);
+      setNotice('更新已安装，请手动重启应用生效。');
+      setInstalling(false);
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : String(err));
+      setInstalling(false);
+    }
+  }
+
+  async function refreshNsfwPending() {
+    try {
+      setNsfwPending(await nsfwCandidates());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleRescanNsfw() {
+    setNsfwBusy(true);
+    setNsfwNotice(null);
+    try {
+      const result = await rescanNsfw();
+      setNsfwNotice(
+        `重新判定完成：成人 ${result.adult} · 正常 ${result.safe} · 跳过 ${result.skipped} · 无法判定 ${result.unmatched}`,
+      );
+      await refreshNsfwPending();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNsfwBusy(false);
+    }
+  }
+
+  /** 把勾选的标为成人（隐藏）；`markRestSafe` 为 true 时把没勾选的一并标为正常。 */
+  async function applyNsfwSelection(markRestSafe: boolean) {
+    setNsfwBusy(true);
+    setNsfwNotice(null);
+    try {
+      for (const item of nsfwPending) {
+        const picked = nsfwPicked.includes(item.id);
+        if (picked) {
+          await setItemNsfw(item.id, 'adult');
+        } else if (markRestSafe) {
+          await setItemNsfw(item.id, 'safe');
+        }
+      }
+      setNsfwPicked([]);
+      await refreshNsfwPending();
+      setNotice('成人内容标记已更新。');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNsfwBusy(false);
+    }
+  }
 
   async function handleCheckUpdate() {
     setUpdateBusy(true);
@@ -713,6 +817,101 @@ export default function SettingsPage({ onSaved }: Props) {
       </section>
 
       <section className="card">
+        <h2>NSFW</h2>
+        <p className="muted">
+          开启后会隐藏标记为相关内容的条目。判定依据依次是 Bangumi 的 nsfw
+          标记、条目标签，最后是下面的人工裁定。尚未判定的条目一律照常显示。
+        </p>
+        <label className="checkbox-inline" title="隐藏被判定为成人内容的条目">
+          <input
+            type="checkbox"
+            checked={hideNsfw}
+            onChange={(event) => setHideNsfw(event.target.checked)}
+          />
+          隐藏标记为相关内容的条目（条目库搜索 nsfw 可临时查看）
+        </label>
+
+        <div className="card-head" style={{ marginTop: 12 }}>
+          <h3>待人工裁定（{nsfwPending.length}）</h3>
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn-tiny"
+              onClick={() => void handleRescanNsfw()}
+              disabled={nsfwBusy}
+            >
+              {nsfwBusy ? '处理中…' : '按已有元数据判定'}
+            </button>
+          </div>
+        </div>
+        <p className="muted">
+          只有「尚未判定」的条目会出现在这里：已由元数据自动判定的会自动排除。
+        </p>
+        {nsfwNotice && <p className="muted">{nsfwNotice}</p>}
+        {nsfwPending.length === 0 ? (
+          <div className="placeholder small">没有待裁定的条目。</div>
+        ) : (
+          <>
+            <ul className="nsfw-list">
+              {nsfwPending.map((item) => (
+                <li key={item.id} className="nsfw-row">
+                  <label className="checkbox-inline">
+                    <input
+                      type="checkbox"
+                      checked={nsfwPicked.includes(item.id)}
+                      onChange={(event) =>
+                        setNsfwPicked((picked) =>
+                          event.target.checked
+                            ? [...picked, item.id]
+                            : picked.filter((id) => id !== item.id),
+                        )
+                      }
+                    />
+                    {item.title}
+                  </label>
+                  <span className="muted">{item.kind === 'anime' ? '动画' : '游戏'}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void applyNsfwSelection(false)}
+                disabled={nsfwBusy || nsfwPicked.length === 0}
+              >
+                勾选的标为相关内容（{nsfwPicked.length}）
+              </button>
+              <button
+                type="button"
+                className="btn btn-tiny"
+                onClick={() => void applyNsfwSelection(true)}
+                disabled={nsfwBusy}
+              >
+                勾选标为相关内容，其余标为正常
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section className="card">
+        <h2>窗口与托盘</h2>
+        <p className="muted">
+          留驻托盘后应用仍在后台运行：播放会话轮询、进度回写与连播会继续工作。
+          要彻底退出，右键托盘图标选「退出」，或取消下面的选项后再关窗口。
+        </p>
+        <label className="checkbox-inline" title="关闭主窗口时只隐藏窗口，不结束进程">
+          <input
+            type="checkbox"
+            checked={closeToTray}
+            onChange={(event) => setCloseToTray(event.target.checked)}
+          />
+          关闭主窗口时留驻托盘（取消勾选则关闭即退出应用）
+        </label>
+      </section>
+
+      <section className="card">
         <div className="card-head">
           <h2>关于</h2>
           <div className="row-actions">
@@ -736,8 +935,21 @@ export default function SettingsPage({ onSaved }: Props) {
         )}
         {update?.hasUpdate && (
           <div className="banner banner-warn">
-            <span>发现新版本 v{update.latestVersion}，下载安装包覆盖安装即可。</span>
+            <span>
+              发现新版本 v{update.latestVersion}
+              {update.autoInstall ? '，可直接下载安装。' : '，需到发布页下载安装包。'}
+            </span>
             <div className="row-actions">
+              {update.autoInstall && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-tiny"
+                  onClick={() => void handleInstallUpdate()}
+                  disabled={installing}
+                >
+                  {installing ? '下载中…' : '下载并安装'}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-tiny"
@@ -747,6 +959,15 @@ export default function SettingsPage({ onSaved }: Props) {
               </button>
             </div>
           </div>
+        )}
+        {installing && (
+          <p className="muted">
+            {updateProgress
+              ? `已下载 ${formatBytes(updateProgress.downloaded)}${
+                  updateProgress.total ? ` / ${formatBytes(updateProgress.total)}` : ''
+                } · 下载完成后应用会自动退出并由安装程序重启`
+              : '正在准备下载…'}
+          </p>
         )}
         {update?.hasUpdate && update.notes && <p className="muted update-notes">{update.notes}</p>}
       </section>

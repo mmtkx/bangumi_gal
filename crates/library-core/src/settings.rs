@@ -24,6 +24,21 @@ pub mod keys {
 
     /// 插件根目录；空表示使用默认位置（应用数据目录下的 plugins）。
     pub const PLUGINS_DIR: &str = "plugins_dir";
+
+    /// 关闭主窗口时是否留驻托盘（`1` 留驻 / `0` 直接退出）；缺省为留驻。
+    pub const CLOSE_TO_TRAY: &str = "close_to_tray";
+
+    /// 是否隐藏成人内容条目（`0` 显示 / `1` 隐藏）；缺省为隐藏。
+    pub const HIDE_NSFW: &str = "hide_nsfw";
+
+    /// 老库的一次性补判是否已做过（`1` 已做）。
+    ///
+    /// 0004 迁移给所有条目填的是 unknown，若不补判，用户第一次打开设置页会面对
+    /// 一整屏「未判定」。启动时自动跑一次，做完打标记，之后只由用户手动触发。
+    pub const NSFW_BACKFILL_DONE: &str = "nsfw_backfill_done";
+
+    /// 是否已经提示过「关窗只是隐藏到托盘」（`1` 已提示）。
+    pub const TRAY_HINT_SHOWN: &str = "tray_hint_shown";
 }
 
 /// 键值设置存储的抽象。library-core 只负责落库，不做业务校验。

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ApiError,
   autoMatch,
+  getSettings,
   listItems,
   listProgress,
   playNextEpisode,
@@ -87,6 +88,8 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
   const [items, setItems] = useState<ItemSummary[]>([]);
   const [kind, setKind] = useState<ItemKind | null>(null);
   const [keyword, setKeyword] = useState('');
+  // 是否隐藏成人内容：来自设置，切换设置后随 version 重新拉取。
+  const [hideNsfw, setHideNsfw] = useState(true);
   const [sort, setSort] = useState<SortKey>('title');
   const [bound, setBound] = useState<BoundFilter>('all');
   // 收藏状态筛选：null 表示不限。
@@ -109,6 +112,18 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [issues, setIssues] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSettings()
+      .then((data) => {
+        if (!cancelled) setHideNsfw(data.hideNsfw);
+      })
+      .catch((err: unknown) => console.warn('读取隐藏设置失败', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [version]);
 
   useEffect(() => {
     let cancelled = false;
@@ -194,12 +209,20 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
 
   const visible = useMemo(() => {
     const trimmed = keyword.trim().toLowerCase();
+    // 搜索 "nsfw" 是临时查看入口：只列被隐藏的成人条目，其余筛选照旧。
+    const nsfwPeek = trimmed === 'nsfw';
     const filtered = items.filter((item) => {
-      if (trimmed) {
-        const hit =
-          item.title.toLowerCase().includes(trimmed) ||
-          item.folderPath.toLowerCase().includes(trimmed);
-        if (!hit) return false;
+      if (nsfwPeek) {
+        if (item.nsfw !== 'adult') return false;
+      } else {
+        // 隐藏开关只作用于成人条目；未判定的一律显示，避免用户以为条目丢了。
+        if (hideNsfw && item.nsfw === 'adult') return false;
+        if (trimmed) {
+          const hit =
+            item.title.toLowerCase().includes(trimmed) ||
+            item.folderPath.toLowerCase().includes(trimmed);
+          if (!hit) return false;
+        }
       }
       if (bound === 'bound' && item.bangumiSubjectId === null) return false;
       if (bound === 'unbound' && item.bangumiSubjectId !== null) return false;
@@ -219,7 +242,7 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
       sorted.sort((left, right) => right.media.fileCount - left.media.fileCount);
     }
     return sorted;
-  }, [items, keyword, bound, sort, status]);
+  }, [items, keyword, bound, sort, status, hideNsfw]);
 
   /** 各收藏状态的条目数：不受搜索与状态筛选影响，否则数字会随点击跳动。 */
   const statusCounts = useMemo(() => {

@@ -17,6 +17,10 @@ pub struct TitleParser {
     season_cn_numbered: Regex,
     junk: Regex,
     year: Regex,
+    /// 版本标记（`Lv.2`、`Lv2`、`Ver 2`、`v2`）：里面的数字不是集号。
+    version_mark: Regex,
+    /// 带捕获组的方括号，用于「纯括号名」的标题兜底。
+    bracket_inner: Regex,
     separators: Regex,
     episodes: Vec<Regex>,
 }
@@ -39,6 +43,10 @@ impl TitleParser {
                 r"(?i)(?:\b(?:1080p|720p|2160p|480p|4k|8k|8bit|10bit|hi10p|hevc|avc|x264|x265|h264|h265|av1|vp9|aac|flac|opus|ac3|eac3|dts|bdrip|bluray|bd|web-?dl|webrip|hdtv|dvdrip|remux|hdr10|hdr|sdr|chs|cht|gb|big5|jpn|eng|dual|multi|sub|mkv|mp4|avi)\b|简繁|简体|繁体|中字|内嵌|外挂|字幕|合集|无修|完结|招募|生肉|熟肉|[★☆♪])",
             )?,
             year: build(r"(?i)(?:^|[\s._\-])(?:19|20)\d{2}(?:[\s._\-]|$)")?,
+            // 不要求左侧边界：`学生会的一己之见Lv.2` 的版本标记紧跟在汉字后面。
+            // 尾部必须是非字母数字或结束，避免吃掉 `Dev2` 之外的普通单词。
+            version_mark: build(r"(?i)(?:lv|ver|version|v)\s*\.?\s*\d{1,3}(?:[^0-9A-Za-z]|$)")?,
+            bracket_inner: build(r"[\[【（(]([^\]】）)]*)[\]】）)]")?,
             separators: build(r"[._\[\]【】（）()/\\]+")?,
             episodes: vec![
                 build(r"(?i)s\d{1,2}\s*e(\d{1,4})")?,
@@ -49,26 +57,50 @@ impl TitleParser {
         })
     }
 
-    /// 从文件夹名提取用于展示的标题。清洗后为空时退回原始名称，避免条目显示为空白。
+    /// 从文件夹名提取用于展示的标题。
+    ///
+    /// 清洗后为空时（名字整体由方括号段构成，例如 `[组][作品][1080P]…`），
+    /// 改为逐个清洗括号内的文本、挑最像作品名的一段——否则条目会直接显示成
+    /// 一整串 release 名。仍然挑不出来才退回原始名称。
     pub fn parse_title(&self, folder_name: &str) -> String {
-        let mut text = folder_name.to_string();
+        let cleaned = self.clean_title(folder_name);
+        if !cleaned.is_empty() {
+            return cleaned;
+        }
+        let mut best: Option<(usize, String)> = None;
+        for inner in self.bracket_inner.captures_iter(folder_name) {
+            let Some(text) = inner.get(1) else {
+                continue;
+            };
+            let candidate = self.clean_title(text.as_str());
+            if candidate.is_empty() {
+                continue;
+            }
+            let score = title_score(&candidate);
+            if best.as_ref().is_none_or(|(current, _)| score > *current) {
+                best = Some((score, candidate));
+            }
+        }
+        match best {
+            Some((_, value)) => value,
+            None => folder_name.trim().to_string(),
+        }
+    }
+
+    /// 标题清洗管线本身，不做任何兜底。
+    fn clean_title(&self, raw: &str) -> String {
+        let mut text = raw.to_string();
         text = self.bracket.replace_all(&text, " ").to_string();
         text = self.season_marks.replace_all(&text, " ").to_string();
         text = self.season_cn.replace_all(&text, " ").to_string();
+        text = self.version_mark.replace_all(&text, " ").to_string();
         text = self.junk.replace_all(&text, " ").to_string();
         text = self.year.replace_all(&text, " ").to_string();
         text = self.separators.replace_all(&text, " ").to_string();
 
-        let collapsed = collapse_whitespace(&text);
-        let trimmed = collapsed
+        collapse_whitespace(&text)
             .trim_matches(|c: char| c.is_whitespace() || "-–—_·:：|".contains(c))
-            .to_string();
-
-        if trimmed.is_empty() {
-            folder_name.trim().to_string()
-        } else {
-            trimmed
-        }
+            .to_string()
     }
 
     /// 从视频文件名解析「系列标题」。
@@ -81,8 +113,11 @@ impl TitleParser {
 
     /// 从视频文件名解析集号。解析不到返回 None，UI 退化为展示文件名。
     pub fn parse_episode(&self, file_name: &str) -> Option<u32> {
+        // `[DBD-Raws][Seitokai no Ichizon Lv.2][03]…` 里 `Lv.2` 的点会被当成集号分隔符，
+        // 而它比真正的 `[03]` 更靠左，所以必须先抹掉版本标记再匹配，否则整部番都会取到 2。
+        let cleaned = self.version_mark.replace_all(file_name, " ");
         for pattern in &self.episodes {
-            let Some(captures) = pattern.captures(file_name) else {
+            let Some(captures) = pattern.captures(&cleaned) else {
                 continue;
             };
             let Some(raw) = captures.get(1) else {
@@ -91,7 +126,8 @@ impl TitleParser {
             let Ok(value) = raw.as_str().parse::<u32>() else {
                 continue;
             };
-            if (1..=999).contains(&value) && !AMBIGUOUS_NUMBERS.contains(&value) {
+            // 0 是合法的：不少压制组从 `[00]` 开始编号（由探测阶段整体 +1）。
+            if (0..=999).contains(&value) && !AMBIGUOUS_NUMBERS.contains(&value) {
                 return Some(value);
             }
         }
@@ -125,6 +161,27 @@ impl TitleParser {
         }
         parts.iter().rev().find_map(|part| self.parse_season(part))
     }
+}
+
+/// 给候选标题打分：汉字最有辨识度，拉丁字母次之，纯数字/符号最低。
+///
+/// `[组][学生会的一己之见Lv.2][00-10TV全集+特典映像][1080P]…` 这类名字里，
+/// 「学生会的一己之见」应当压过「00-10TV全集+特典映像」与「DBD-Raws」。
+fn title_score(text: &str) -> usize {
+    let mut score = 0;
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            // 数字不计分：`00-10TV全集+特典映像` 里的集数范围会把分值顶上去。
+            continue;
+        }
+        if ch.is_ascii_alphabetic() {
+            score += 1;
+        } else if ch.is_alphanumeric() {
+            // 汉字/假名等：权重更高，否则长串英文压制组名会赢。
+            score += 3;
+        }
+    }
+    score
 }
 
 /// 把「一 / 十二 / 二十三」这类不超过两位的中文数字转成数值。
@@ -211,6 +268,47 @@ mod tests {
 
     fn parser() -> TitleParser {
         TitleParser::new().expect("parser")
+    }
+
+    #[test]
+    fn episode_ignores_version_marker() {
+        let parser = parser();
+        // `Lv.2` 里的点会被当成集号分隔符，且比真正的 [03] 更靠左：
+        // 不先抹掉版本标记，整部番都会取到第 2 集、共用一行进度。
+        assert_eq!(
+            parser.parse_episode("[DBD-Raws][Seitokai no Ichizon Lv.2][03][1080P].mkv"),
+            Some(3)
+        );
+        assert_eq!(
+            parser.parse_episode("[Group][Show Lv.2][10][BDRip].mkv"),
+            Some(10)
+        );
+        // 从 00 起编的压制组：0 要能解析出来，由探测阶段整体 +1 变成第 1 集。
+        assert_eq!(
+            parser.parse_episode("[DBD-Raws][Seitokai no Ichizon Lv.2][00][1080P].mkv"),
+            Some(0)
+        );
+        // 常规点分隔命名不能被版本标记规则误伤。
+        assert_eq!(parser.parse_episode("Show.07.1080p.mkv"), Some(7));
+        assert_eq!(parser.parse_episode("Show - 12 [1080p].mkv"), Some(12));
+    }
+
+    #[test]
+    fn title_falls_back_to_bracket_content() {
+        let parser = parser();
+        // 名字整体由方括号段构成时，清洗结果为空，须从括号内容里挑作品名，
+        // 否则条目会显示成一整串 release 名。
+        assert_eq!(
+            parser.parse_title(
+                "[DBD-Raws][学生会的一己之见Lv.2][00-10TV全集+特典映像][1080P][BDRip][HEVC-10bit][FLAC][MKV]"
+            ),
+            "学生会的一己之见"
+        );
+        // 括号外有正常文本时不受影响。
+        assert_eq!(
+            parser.parse_title("[VCB-Studio] Kimi no Na wa [Ma10p_1080p]"),
+            "Kimi no Na wa"
+        );
     }
 
     #[test]

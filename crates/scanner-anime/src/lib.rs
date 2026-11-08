@@ -15,7 +15,7 @@
 mod media;
 mod title;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 pub use media::{episode_hint, is_container_dir, is_video_file, MAX_PROBE_FILES};
@@ -274,6 +274,19 @@ impl AnimeScanner {
     /// `filter` 是该条目的分组键：根目录松散文件会共用一个目录，
     /// 只有键一致的文件才属于这个条目；`None` 表示整个目录都属于它。
     pub fn probe(&self, folder: &Path, filter: Option<&str>) -> Result<MediaProbe> {
+        self.probe_with_hint(folder, filter, None)
+    }
+
+    /// 带「第一季真实集数」提示的探测。
+    ///
+    /// `first_season_eps` 来自绑定条目在 Bangumi 上的总集数，只用于修正
+    /// 「前季磁盘缺集 → 后季偏移不足」这一种偏差；拿不到就不要传。
+    pub fn probe_with_hint(
+        &self,
+        folder: &Path,
+        filter: Option<&str>,
+        first_season_eps: Option<u32>,
+    ) -> Result<MediaProbe> {
         let mut collected = media::collect_videos_recursive(folder, PROBE_MAX_DEPTH)?;
         if let Some(filter) = filter {
             let total = collected.len();
@@ -329,8 +342,11 @@ impl AnimeScanner {
             .collect();
         let (mut files, seasons): (Vec<MediaFile>, Vec<Option<u32>>) = entries.into_iter().unzip();
 
+        // 有些压制组从 `00` 起编；先整体 +1，别让第 0 集被当成解析失败顺延到末尾。
+        shift_zero_based_episodes(&mut files);
+
         // 多季合并成一个条目时，先把各季集号挪到互不重叠的区间，否则 S01E05 与 S02E05 会写同一行进度。
-        apply_season_offsets(&mut files, &seasons);
+        apply_season_offsets(&mut files, &seasons, first_season_eps);
 
         // 正片整块在前（按来源分组、组内按集号），附属内容整块在后（按来源分组、组内按文件名自然序）。
         // 顺序即顺延编号的顺序，因此附属文件永远拿不到正片的集号。
@@ -414,7 +430,44 @@ fn normalize_groups(files: &mut [MediaFile]) {
 ///
 /// 为什么不能只靠「同号去重」：`S01E05` 与 `S02E05` 谁是第 5 集没有正确答案，
 /// 去重只能按文件名排序猜；而分季的集号本身是可靠的，按季偏移才不会被猜错。
-fn apply_season_offsets(files: &mut [MediaFile], seasons: &[Option<u32>]) {
+/// 从 `00` 起编的压制组：检测到第 0 集就把整组集号 +1。
+///
+/// `[00]` 是合法集号而不是「解析失败」——若不处理，它会被顺延到最大集号之后，
+/// 排在整部番末尾，观看顺序和续播位置全错。
+fn shift_zero_based_episodes(files: &mut [MediaFile]) {
+    // 按来源目录各自判断：主目录从 00 起编，不代表另一个目录也从 00 起编。
+    // 一并处理会把没写 00 的目录整体推后一位（`[01]` 变第 2 集），正是之前出错的原因。
+    let mut zero_groups: BTreeSet<Option<String>> = BTreeSet::new();
+    for file in files.iter() {
+        if file.special {
+            continue;
+        }
+        if file.episode == Some(0) {
+            zero_groups.insert(file.group.clone());
+        }
+    }
+    if zero_groups.is_empty() {
+        return;
+    }
+    for file in files.iter_mut() {
+        if file.special || !zero_groups.contains(&file.group) {
+            continue;
+        }
+        if let Some(episode) = file.episode {
+            file.episode = Some(episode.saturating_add(1));
+        }
+    }
+}
+
+/// 允许用 Bangumi 集数覆盖磁盘最大集号的最大差值（约一季）。
+/// 超过这个差值就认为拿到的是系列级集数，不能当单季基准。
+const MISSING_EPISODE_TOLERANCE: u32 = 12;
+
+fn apply_season_offsets(
+    files: &mut [MediaFile],
+    seasons: &[Option<u32>],
+    first_season_eps: Option<u32>,
+) {
     let mut max_by_season: BTreeMap<u32, u32> = BTreeMap::new();
     for (file, season) in files.iter().zip(seasons.iter()) {
         if file.special {
@@ -429,6 +482,28 @@ fn apply_season_offsets(files: &mut [MediaFile], seasons: &[Option<u32>]) {
     }
     if max_by_season.len() < 2 {
         return;
+    }
+
+    // 半修：磁盘上的第一季可能缺集，导致后面各季整体偏移不足（S02E01 会被编成第 11 集
+    // 而不是第 13 集，云端进度就会写到 S01E11 上）。绑定条目的总集数更接近真实值。
+    //
+    // 但只信任「比磁盘略多」的情形：如果这个数字比磁盘多出一整季以上，多半是系列级条目
+    // （eps 覆盖全部季），拿它当单季基准会把第二季推得更离谱。
+    if let (Some(hint), Some((&first_season, &disk_max))) =
+        (first_season_eps, max_by_season.iter().next())
+    {
+        let gap = hint.saturating_sub(disk_max);
+        if gap > 0 && gap <= MISSING_EPISODE_TOLERANCE {
+            tracing::debug!(first_season, disk_max, hint, "第一季集数按 Bangumi 修正");
+            max_by_season.insert(first_season, hint);
+        } else if gap > MISSING_EPISODE_TOLERANCE {
+            tracing::debug!(
+                first_season,
+                disk_max,
+                hint,
+                "Bangumi 集数明显大于磁盘，按系列级条目处理，忽略"
+            );
+        }
     }
 
     let mut offsets: BTreeMap<u32, u32> = BTreeMap::new();
@@ -872,6 +947,112 @@ mod tests {
         let episodes: Vec<Option<u32>> = probe.files.iter().map(|file| file.episode).collect();
         assert_eq!(episodes, [Some(1), Some(2), Some(3), Some(4)]);
         assert_eq!(probe.episode_hint.as_deref(), Some("E01–E04"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_handles_zero_based_numbering_and_bracketed_specials() {
+        let root = temp_root("probe-zero-based");
+        let show = root.join("Show");
+        // 从 00 起编：00 就是第一集，后续整体后移。
+        touch(&show, "[G][Show][00][1080P].mkv");
+        touch(&show, "[G][Show][01][1080P].mkv");
+        touch(&show, "[G][Show][09][1080P].mkv");
+        // 文件名里带 [OVA] 的是附属内容，不能占第 10 集的位置。
+        touch(&show, "[G][Show][10][OVA][1080P].mkv");
+        // 附属目录里的同号文件：目录名不在白名单时曾被当成正片，还会被主目录的 00 带着 +1。
+        touch(&show.join("特典映像"), "[G][Show][01][1080P].mkv");
+        touch(&show.join("图集"), "[G][Show][Images][1080P].mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let probe = scanner.probe(&show, None).expect("probe");
+
+        let pairs: Vec<(Option<u32>, bool)> = probe
+            .files
+            .iter()
+            .map(|file| (file.episode, file.special))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                (Some(1), false),
+                (Some(2), false),
+                (Some(10), false),
+                (Some(11), true),
+                (Some(12), true),
+                (Some(13), true),
+            ]
+        );
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_uses_bangumi_episode_count_when_first_season_is_incomplete() {
+        let root = temp_root("probe-seasons-gap");
+        let show = root.join("Show");
+        // 第一季磁盘上只有 10 集，真实是 12 集。
+        for episode in 1..=10 {
+            touch(
+                &show.join("Season 1"),
+                &format!("Show S01E{episode:02}.mkv"),
+            );
+        }
+        touch(&show.join("Season 2"), "Show S02E01.mkv");
+        touch(&show.join("Season 2"), "Show S02E02.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+
+        // 没有提示时只能按磁盘推断：第二季从第 11 集起（偏移不足）。
+        let plain = scanner.probe(&show, None).expect("probe");
+        let tail: Vec<u32> = plain
+            .files
+            .iter()
+            .filter_map(|file| file.episode)
+            .skip(10)
+            .collect();
+        assert_eq!(tail, [11, 12]);
+
+        // 给出 Bangumi 的总集数 12 后，第二季应落到第 13 集起。
+        let fixed = scanner
+            .probe_with_hint(&show, None, Some(12))
+            .expect("probe with hint");
+        let tail: Vec<u32> = fixed
+            .files
+            .iter()
+            .filter_map(|file| file.episode)
+            .skip(10)
+            .collect();
+        assert_eq!(tail, [13, 14]);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn probe_ignores_series_level_episode_count() {
+        let root = temp_root("probe-seasons-series-eps");
+        let show = root.join("Show");
+        for episode in 1..=10 {
+            touch(
+                &show.join("Season 1"),
+                &format!("Show S01E{episode:02}.mkv"),
+            );
+        }
+        touch(&show.join("Season 2"), "Show S02E01.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        // 26 比磁盘多出 16 集，明显是覆盖全系列的集数：不能拿来当第一季基准，
+        // 否则第二季会被推到第 27 集。
+        let probe = scanner
+            .probe_with_hint(&show, None, Some(26))
+            .expect("probe");
+        let last = probe
+            .files
+            .iter()
+            .filter_map(|file| file.episode)
+            .next_back();
+        assert_eq!(last, Some(11));
 
         fs::remove_dir_all(root).ok();
     }
