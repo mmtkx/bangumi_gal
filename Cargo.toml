@@ -15,7 +15,7 @@ members = [
 exclude = ["plugins"]
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 license = "MIT"
 rust-version = "1.95"
@@ -71,6 +71,13 @@ wasmtime = { version = "48", default-features = false, features = ["std", "crane
 # 注：release 档默认就不是增量，无需重复声明；test 档继承 dev。
 [profile.dev]
 incremental = false
+
+# 第三方依赖不生成调试信息。
+# 原因：wasmtime / tauri / tokio 这几个的 PDB 单个就有几百 MB，一轮 debug 构建下来
+# 光依赖的调试符号就能占十几 GB；而实际排错几乎不会单步进这些库。
+# 自己的 crate 仍保留完整调试信息，断点、变量、单步都不受影响。
+[profile.dev.package."*"]
+debug = false
 
 # 发行版：去掉符号表（体积从 33MB 降到 15MB 量级），
 # 并配合发布构建时的 --remap-path-prefix 抹掉编译机路径，

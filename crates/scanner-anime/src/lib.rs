@@ -3,8 +3,10 @@
 //!
 //! 条目目录判定：
 //! - 候选：根目录下任意「直接含视频文件」的目录；
-//! - 归并：候选一律上提到根目录第一层子目录作为条目目录，因此同一番剧下的多个压制组、
-//!   分季目录、附属目录（SPs / 特典 / NCOP 等）都属于同一个条目；
+//! - 上提：候选一律上提到根目录第一层子目录作为「番剧目录」；
+//! - 拆分：番剧目录下的多个子目录若指向不同季或不同作品（`K-ON!`、`K-ON!!`、
+//!   `K-ON! The Movie`，或 `Season 1` / `Season 2`），按子目录集合拆成多个条目；
+//!   同一季的多个压制组仍合并为一个条目（按解析出的作品名分组）；
 //! - 区分：`MediaFile.group` 记录文件所属的相对子目录，详情页据此展示来源差异。
 //!
 //! 已知前提：根目录下一层就是番剧目录。若根目录下还有「季度/年份」这类中间层，
@@ -28,6 +30,21 @@ use library_core::{paths, AppEvent, Result};
 
 /// 探测条目文件时的最大递归深度：足够覆盖 `番剧/发布组/Season/文件`。
 const PROBE_MAX_DEPTH: usize = 4;
+
+/// 拆条目时向下穿透「只有一个子目录」的层数上限。
+///
+/// `番剧/发布组目录` 这种只有一层的壳很常见，必须穿透到真正的分季层；
+/// 但穿得太深容易把 `Season 1/Disc 1` 当成两季，因此设上限。
+const SPLIT_MAX_DESCEND: usize = 2;
+
+/// 目录集合型分组键的前缀：`dirs:` + 若干相对目录（`DIRS_FILTER_SEPARATOR` 分隔）。
+///
+/// 旧数据里的分组键是「作品名归一化串」（根目录松散文件用），两种形式并存，
+/// 由 `AnimeScanner::file_in_group` 按前缀区分。
+const DIRS_FILTER_PREFIX: &str = "dirs:";
+
+/// 分组键里多个目录之间的分隔符：路径里不可能出现的控制字符。
+const DIRS_FILTER_SEPARATOR: &str = "\u{1f}";
 
 /// 动画条目扫描器。
 pub struct AnimeScanner {
@@ -88,10 +105,10 @@ impl AnimeScanner {
         }
         report.folders_seen = dirs.len();
 
-        // 第二遍：候选目录一律上提到根目录下的第一层，作为条目目录。
+        // 第二遍：候选目录一律上提到根目录下的第一层，作为「番剧目录」。
         //
-        // 同一部番下的多个压制组、分季目录、附属目录都归到该番剧一个条目里，
-        // 具体来源差异由详情页按 `group`（相对子目录）区分。
+        // 同一部番下的多个压制组、分季目录、附属目录都落在同一个番剧目录里；
+        // 分季在下面对番剧目录再做一层拆分，来源差异由详情页按 `group` 区分。
         let mut item_roots: BTreeMap<String, PathBuf> = BTreeMap::new();
         for dir in &dirs {
             if media::is_container_dir(dir) || !has_direct_videos.contains(dir) {
@@ -108,23 +125,46 @@ impl AnimeScanner {
             item_roots.insert(current.to_string_lossy().to_string(), current);
         }
 
-        // 第三遍：根目录直属视频按「系列键」分组。
+        // 反向索引：某个目录的子树里有没有视频。拆分要按「子目录各成一季」判断，
+        // 而视频总是落在更深处（`番剧/发布组/Season 1/*.mkv`），只看直属文件不够。
+        let mut with_videos: HashSet<PathBuf> = HashSet::new();
+        for dir in &has_direct_videos {
+            let mut current = Some(dir.clone());
+            while let Some(path) = current {
+                let at_root = path == root;
+                with_videos.insert(path.clone());
+                if at_root {
+                    break;
+                }
+                current = path.parent().map(Path::to_path_buf);
+            }
+        }
+
+        // 第三遍：规划条目。
         //
-        // 下载后把某部番的 01/02/03 直接摊在根目录是很常见的整理习惯；
-        // 这时没有子目录可当条目，只能从文件名反推系列标题来分组。
-        // 条目身份是 (目录, 分组键)，因此同一目录可以承载多个条目。
+        // 番剧目录下若有多组指向不同季 / 不同作品的子目录，就按子目录集合拆成多个条目；
+        // 只有一组（含同季多压制组）时维持「整个番剧目录一个条目」。
         let mut planned: Vec<(PathBuf, Option<String>, String)> = Vec::new();
         for item_root in item_roots.values() {
             let folder_name = item_root
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_default();
-            planned.push((
-                item_root.clone(),
-                None,
-                self.parser.parse_title(&folder_name),
-            ));
+            let parent_title = self.parser.parse_title(&folder_name);
+            let splits = self.season_splits(item_root, &with_videos, &parent_title)?;
+            if splits.len() < 2 {
+                planned.push((item_root.clone(), None, parent_title));
+                continue;
+            }
+            for (filter, title) in splits {
+                planned.push((item_root.clone(), Some(filter), title));
+            }
         }
+        // 第四遍：根目录直属视频按「系列键」分组。
+        //
+        // 下载后把某部番的 01/02/03 直接摊在根目录是很常见的整理习惯；
+        // 这时没有子目录可当条目，只能从文件名反推系列标题来分组。
+        // 条目身份是 (目录, 分组键)，因此同一目录可以承载多个条目。
         for (key, title) in self.loose_groups(root)? {
             planned.push((root.to_path_buf(), Some(key), title));
         }
@@ -226,8 +266,123 @@ impl AnimeScanner {
         Ok(groups.into_iter().collect())
     }
 
-    /// 文件是否属于某个松散分组。
+    /// 把番剧目录按「不同季 / 不同作品」拆成若干条目，返回 (分组键, 展示标题)。
+    ///
+    /// 依据是子目录名而不是文件名：`[VCB-Studio] K-ON!` 下并列 `K-ON!`、`K-ON!!`、
+    /// `K-ON! The Movie` 三个发布目录，文件名里的作品名与目录名一致，但
+    /// `Season 1` / `Season 2` 这种目录名只有季号，只能靠目录层级区分。
+    ///
+    /// 返回空表示不拆（只有一个作品、或结构不像分季），由调用方维持整目录一个条目。
+    /// 返回单个元素也视为不拆。
+    fn season_splits(
+        &self,
+        show: &Path,
+        with_videos: &HashSet<PathBuf>,
+        parent_title: &str,
+    ) -> Result<Vec<(String, String)>> {
+        // 穿透「只有一个子目录」的壳层：`番剧/发布组目录/Season 1`。
+        let mut level = show.to_path_buf();
+        let mut children: Vec<PathBuf> = Vec::new();
+        for _ in 0..=SPLIT_MAX_DESCEND {
+            children = video_children(&level, with_videos)?;
+            match children.len() {
+                0 => return Ok(Vec::new()),
+                1 => {
+                    level = children.remove(0);
+                }
+                _ => break,
+            }
+        }
+        if children.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        // 直属视频与带视频的子目录并存：拆分会把直属文件丢在条目之外，宁可不拆。
+        if media::has_direct_videos(&level)? {
+            return Ok(Vec::new());
+        }
+        // `Disc 1` / `Part 2` / `上卷` 这类是同一次发布的分卷，集号连续，不是不同的季。
+        if children.iter().any(|child| media::is_disc_like_dir(child)) {
+            return Ok(Vec::new());
+        }
+
+        let mut groups: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+        for child in &children {
+            let Some((title, relative)) = self.split_child_title(show, child, parent_title) else {
+                continue;
+            };
+            let key = title_key(&title);
+            if key.is_empty() {
+                continue;
+            }
+            groups
+                .entry(key)
+                .or_insert_with(|| (title, Vec::new()))
+                .1
+                .push(relative);
+        }
+        if groups.len() < 2 {
+            return Ok(Vec::new());
+        }
+
+        Ok(groups
+            .into_iter()
+            .map(|(_, (title, dirs))| {
+                let filter = format!("{DIRS_FILTER_PREFIX}{}", dirs.join(DIRS_FILTER_SEPARATOR));
+                (filter, title)
+            })
+            .collect())
+    }
+
+    /// 拆分时单个子目录的展示标题与相对路径；识别不出作品名时返回 None（该目录不参与拆分）。
+    fn split_child_title(
+        &self,
+        show: &Path,
+        child: &Path,
+        parent_title: &str,
+    ) -> Option<(String, String)> {
+        let name = child.file_name()?.to_string_lossy().to_string();
+        let season = self.parser.parse_season(&name);
+        let parsed = self.parser.parse_title(&name);
+        let parsed = parsed.trim();
+
+        // 名字整体就是季标记（`Season 2` / `S2` / `第二季`）：清洗后会被清空、退回原名，
+        // 这时拼上父目录的作品名，否则三个条目会分别叫 `Season 1`、`Season 2`。
+        let title = if season.is_some() && parsed == name.trim() {
+            format!("{parent_title} 第{}季", season?)
+        } else if let Some(season) = season {
+            // 目录名自带季号但标题里已被清掉（`Show S2` → `Show`），补回去以便区分。
+            format!("{parsed} 第{season}季")
+        } else {
+            parsed.to_string()
+        };
+        if title.trim().is_empty() {
+            return None;
+        }
+
+        let relative = child
+            .strip_prefix(show)
+            .ok()?
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/");
+        if relative.is_empty() {
+            return None;
+        }
+        Some((title, relative))
+    }
+
+    /// 文件是否属于条目：`dirs:` 开头的按目录集合判断，其余按作品名分组键判断。
     fn file_in_group(&self, relative: &str, filter: &str) -> bool {
+        if let Some(dirs) = filter.strip_prefix(DIRS_FILTER_PREFIX) {
+            return dirs.split(DIRS_FILTER_SEPARATOR).any(|dir| {
+                !dir.is_empty()
+                    && relative.len() > dir.len()
+                    && relative.starts_with(dir)
+                    && relative.as_bytes()[dir.len()] == b'/'
+            });
+        }
         let bare = relative.rsplit('/').next().unwrap_or(relative);
         let stem = bare.rsplit_once('.').map(|(head, _)| head).unwrap_or(bare);
         media::normalize_key(&self.parser.parse_series_title(stem)) == filter
@@ -385,6 +540,43 @@ fn scope_key(folder: &Path, filter: Option<&str>) -> String {
         Some(value) => format!("{}|{}", folder.to_string_lossy(), value),
         None => folder.to_string_lossy().to_string(),
     }
+}
+
+/// 目录的直属子目录中，「子树里含视频且不是附属内容目录」的那些，按名称排序。
+fn video_children(dir: &Path, with_videos: &HashSet<PathBuf>) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            // 单个目录读不了不应中断整次扫描：退回「不拆分」，保持原有整目录条目。
+            tracing::warn!(dir = %dir.display(), error = %err, "读取目录失败，跳过季拆分");
+            return Ok(Vec::new());
+        }
+    };
+
+    let mut children = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || media::should_skip_dir(&path) || media::is_container_dir(&path) {
+            continue;
+        }
+        if with_videos.contains(&path) {
+            children.push(path);
+        }
+    }
+    children.sort();
+    Ok(children)
+}
+
+/// 拆分分组键：只抹掉大小写与空白差异，保留标点。
+///
+/// 不能用 `media::normalize_key`：它会把 `K-ON!` 与 `K-ON!!` 归一成同一个 `kon`，
+/// 而这两者正是需要拆开的第二季。
+fn title_key(title: &str) -> String {
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// 去掉所有来源目录的公共前缀，让「来源」显示为有意义的相对分支。
@@ -761,28 +953,146 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
-    /// 多季并列时也归到同一个条目，差异由来源目录体现。
+    /// 多季并列时各季独立成条：集号各自从 1 起，互不覆盖进度。
     #[test]
-    fn seasons_are_merged_into_one_item() {
+    fn season_dirs_become_separate_items() {
         let root = temp_root("seasons");
         let show = root.join("Show");
         touch(&show.join("Season 1"), "Show S01E01.mkv");
+        touch(&show.join("Season 1"), "Show S01E02.mkv");
         touch(&show.join("Season 2"), "Show S02E01.mkv");
 
         let scanner = AnimeScanner::new().expect("scanner");
         let repo = repo();
         let report = scanner.scan(&root, &repo, &noop()).expect("scan");
-        assert_eq!(report.created, 1);
+        assert_eq!(report.created, 2, "两季应拆成两个条目");
+
+        let items = repo.list_items(Some(ItemKind::Anime)).expect("list");
+        assert_eq!(items.len(), 2);
+        let mut titles: Vec<String> = items.iter().map(|item| item.title.clone()).collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            vec!["Show 第1季".to_owned(), "Show 第2季".to_owned()]
+        );
+
+        // 第二季自己从第 1 集起，不再被第一季的集数顶成第 3 集。
+        let second = items
+            .iter()
+            .find(|item| item.title.contains("第2季"))
+            .expect("第二季条目");
+        let probe = scanner
+            .probe(&show, second.file_filter.as_deref())
+            .expect("probe");
+        assert_eq!(probe.file_count, 1);
+        assert_eq!(probe.files[0].episode, Some(1));
+        assert!(probe.files[0].name.starts_with("Season 2/"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// 真实库形态：`[VCB-Studio] K-ON!` 下并列正片两季与剧场版，应拆成三个条目。
+    #[test]
+    fn same_ip_seasons_and_movie_become_separate_items() {
+        let root = temp_root("k-on");
+        let show = root.join("[VCB-Studio] K-ON!");
+        let first = show.join("[VCB-Studio] K-ON! [Ma10p_1080p]");
+        let second = show.join("[VCB-Studio] K-ON!! [Ma10p_1080p]");
+        let movie = show.join("[VCB-Studio] K-ON! The Movie [Ma10p_1080p]");
+        touch(&first, "[VCB-Studio] K-ON! [01][Ma10p_1080p].mkv");
+        touch(&first, "[VCB-Studio] K-ON! [02][Ma10p_1080p].mkv");
+        touch(
+            &first.join("SPs"),
+            "[VCB-Studio] K-ON! [SP01][Ma10p_1080p].mkv",
+        );
+        touch(&second, "[VCB-Studio] K-ON!! [01][Ma10p_1080p].mkv");
+        touch(
+            &movie,
+            "[VCB-Studio] K-ON! The Movie [Ma10p_1080p][x265].mkv",
+        );
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let repo = repo();
+        let report = scanner.scan(&root, &repo, &noop()).expect("scan");
+        assert_eq!(report.created, 3, "两季 + 剧场版应各成一个条目");
+
+        let items = repo.list_items(Some(ItemKind::Anime)).expect("list");
+        let mut titles: Vec<String> = items.iter().map(|item| item.title.clone()).collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            vec![
+                "K-ON!".to_owned(),
+                "K-ON! The Movie".to_owned(),
+                "K-ON!!".to_owned()
+            ]
+        );
+
+        let second_item = items
+            .iter()
+            .find(|item| item.title == "K-ON!!")
+            .expect("第二季条目");
+        let probe = scanner
+            .probe(&show, second_item.file_filter.as_deref())
+            .expect("probe");
+        assert_eq!(probe.file_count, 1, "第二季不应混进第一季的文件");
+        assert_eq!(probe.files[0].episode, Some(1));
+
+        // 第一季自身连 SPs 一起算，正片集号仍是 1、2，特典顺延到 3。
+        let first_item = items
+            .iter()
+            .find(|item| item.title == "K-ON!")
+            .expect("第一季条目");
+        let probe = scanner
+            .probe(&show, first_item.file_filter.as_deref())
+            .expect("probe");
+        assert_eq!(probe.file_count, 3);
+        assert_eq!(probe.episode_hint.as_deref(), Some("E01–E02"));
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// 分卷目录（Disc / Part）是同一次发布的连续编号，不能当成两季拆开。
+    #[test]
+    fn disc_like_dirs_are_not_split() {
+        let root = temp_root("discs");
+        let show = root.join("Show");
+        touch(&show.join("Disc 1"), "Show - 01.mkv");
+        touch(&show.join("Disc 2"), "Show - 02.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let repo = repo();
+        let report = scanner.scan(&root, &repo, &noop()).expect("scan");
+        assert_eq!(report.created, 1, "分卷目录不应拆成多个条目");
 
         let probe = scanner.probe(&show, None).expect("probe");
         assert_eq!(probe.file_count, 2);
-        let mut groups: Vec<String> = probe
-            .files
-            .iter()
-            .filter_map(|file| file.group.clone())
-            .collect();
-        groups.sort();
-        assert_eq!(groups, vec!["Season 1".to_owned(), "Season 2".to_owned()]);
+
+        fs::remove_dir_all(root).ok();
+    }
+
+    /// 壳目录下再分季（`番剧/发布组/Season 1`）也能拆：单子目录要能穿透。
+    #[test]
+    fn nested_season_dirs_become_separate_items() {
+        let root = temp_root("nested-seasons");
+        let show = root.join("Show");
+        let release = show.join("[Group] Show");
+        touch(&release.join("Season 1"), "Show - 01.mkv");
+        touch(&release.join("Season 2"), "Show - 01.mkv");
+
+        let scanner = AnimeScanner::new().expect("scanner");
+        let repo = repo();
+        let report = scanner.scan(&root, &repo, &noop()).expect("scan");
+        assert_eq!(report.created, 2);
+
+        let items = repo.list_items(Some(ItemKind::Anime)).expect("list");
+        for item in &items {
+            let probe = scanner
+                .probe(&show, item.file_filter.as_deref())
+                .expect("probe");
+            assert_eq!(probe.file_count, 1, "{} 只应包含本季文件", item.title);
+            assert_eq!(probe.files[0].episode, Some(1));
+        }
 
         fs::remove_dir_all(root).ok();
     }

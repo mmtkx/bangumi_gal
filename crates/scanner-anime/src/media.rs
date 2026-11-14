@@ -153,9 +153,51 @@ fn is_container_name(name: &str) -> bool {
     }
     // 中文目录名很少恰好等于某个固定词（`特典映像`、`映像特典`、`图集` 都可能），
     // 用「包含」判断；拉丁名仍走精确匹配，避免 `Images` 之外的意外命中。
-    CONTAINER_NAME_CONTAINS
+    if CONTAINER_NAME_CONTAINS
         .iter()
         .any(|marker| normalized.contains(marker))
+    {
+        return true;
+    }
+    // 合并命名：`NCOP&NCED`、`SPs+Extras` 拆开后每段都是附属内容才算，
+    // 否则 `Show&K-ON!` 这种并列作品名会被误判。
+    if normalized.contains(['&', '+']) {
+        let parts: Vec<&str> = normalized
+            .split(['&', '+'])
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        return !parts.is_empty()
+            && parts
+                .iter()
+                .all(|part| CONTAINER_DIR_NAMES.iter().any(|item| item == part));
+    }
+    false
+}
+
+/// 是否是「同一次发布的分卷」目录（`Disc 1` / `Part 2` / `上卷`）。
+///
+/// 这类目录里的集号是连续编号的一部分，按目录拆条目会把一季劈成两半、各自从 1 数。
+pub fn is_disc_like_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(is_disc_like_name)
+        .unwrap_or(false)
+}
+
+fn is_disc_like_name(name: &str) -> bool {
+    const MARKS: &[&str] = &[
+        "disc", "disk", "dvd", "part", "pt", "vol", "volume", "上卷", "下卷", "上巻", "下巻",
+        "前篇", "后篇", "前编", "后编", "上部", "下部",
+    ];
+    let normalized = normalize_dir_name(name);
+    MARKS.iter().any(|mark| {
+        normalized == *mark
+            || normalized.ends_with(&format!(" {mark}"))
+            || normalized.ends_with(&format!("-{mark}"))
+            || normalized.ends_with(&format!("_{mark}"))
+            || normalized.ends_with(&format!(".{mark}"))
+    })
 }
 
 /// 相对路径是否位于附属内容目录之下（`SPs/01.mkv`、`特典/NCOP 2.mkv`）。
@@ -439,8 +481,28 @@ mod tests {
                 "{name}"
             );
         }
+        // 合并写法：每段都是附属内容才算；并列作品名不能误判。
+        assert!(is_container_dir(Path::new("D:/anime/Show/NCOP&NCED")));
+        assert!(is_container_dir(Path::new("D:/anime/Show/SPs+Extras")));
+        assert!(!is_container_dir(Path::new("D:/anime/Show/Show&K-ON!")));
         assert!(!is_container_dir(Path::new("D:/anime/Show")));
         assert!(!is_container_dir(Path::new("D:/anime/Show/Season 1")));
         assert!(!is_container_dir(Path::new("D:/anime/Show/Release")));
+    }
+
+    #[test]
+    fn disc_like_dirs_are_recognized() {
+        for name in ["Disc 1", "DISC2", "Part 2", "上卷", "Show Part 1"] {
+            assert!(
+                is_disc_like_dir(Path::new(&format!("D:/anime/Show/{name}"))),
+                "{name}"
+            );
+        }
+        for name in ["Season 1", "K-ON!!", "The Movie", "Partners"] {
+            assert!(
+                !is_disc_like_dir(Path::new(&format!("D:/anime/Show/{name}"))),
+                "{name}"
+            );
+        }
     }
 }
