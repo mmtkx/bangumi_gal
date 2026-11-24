@@ -477,3 +477,36 @@ pub struct NsfwRescanDto {
     /// 没绑定 Bangumi 或没有元数据缓存，无法判定。
     pub unmatched: usize,
 }
+
+/// 用户自定义分类。
+///
+/// 平铺返回，前端按 `parent_id` 自行组树；`depth` 由后端算好（根为 1），
+/// 避免前端递归时和「最多 5 层」的约束逻辑重复一遍。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDto {
+    pub id: String,
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub sort_order: i64,
+    pub depth: i64,
+    /// 直接挂在该分类下的条目数（不含子分类）。
+    pub item_count: i64,
+    /// 封面来源：title（黑底名称）/ image（本地图片）/ carousel（轮播子树条目封面）。
+    pub cover_kind: String,
+    /// 自定义封面文件是否存在（只有 image 类可能为 true）。
+    pub has_cover: bool,
+}
+
+/// 设置页「文件夹」一览里的一个目录。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppFolderDto {
+    /// 稳定标识（前端用作 key，也方便以后加跳转）。
+    pub key: String,
+    pub label: String,
+    pub path: String,
+    /// app（软件自身用） / resource（资源根目录）。
+    pub kind: String,
+    pub exists: bool,
+}

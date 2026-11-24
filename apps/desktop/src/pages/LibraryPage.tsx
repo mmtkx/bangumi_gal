@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import NsfwToggle from '../components/NsfwToggle';
+
 import {
   ApiError,
   autoMatch,
@@ -209,20 +211,15 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
 
   const visible = useMemo(() => {
     const trimmed = keyword.trim().toLowerCase();
-    // 搜索 "nsfw" 是临时查看入口：只列被隐藏的成人条目，其余筛选照旧。
-    const nsfwPeek = trimmed === 'nsfw';
     const filtered = items.filter((item) => {
-      if (nsfwPeek) {
-        if (item.nsfw !== 'adult') return false;
-      } else {
-        // 隐藏开关只作用于成人条目；未判定的一律显示，避免用户以为条目丢了。
-        if (hideNsfw && item.nsfw === 'adult') return false;
-        if (trimmed) {
-          const hit =
-            item.title.toLowerCase().includes(trimmed) ||
-            item.folderPath.toLowerCase().includes(trimmed);
-          if (!hit) return false;
-        }
+      // 隐藏开关只作用于成人条目；未判定的一律显示，避免用户以为条目丢了。
+      // 想看被隐藏的条目用右上角的圆钮，不再保留输入 nsfw 的暗门。
+      if (hideNsfw && item.nsfw === 'adult') return false;
+      if (trimmed) {
+        const hit =
+          item.title.toLowerCase().includes(trimmed) ||
+          item.folderPath.toLowerCase().includes(trimmed);
+        if (!hit) return false;
       }
       if (bound === 'bound' && item.bangumiSubjectId === null) return false;
       if (bound === 'unbound' && item.bangumiSubjectId !== null) return false;
@@ -493,6 +490,7 @@ export default function LibraryPage({ version, onOpen, onConfigure }: Props) {
           >
             {scanning ? '扫描中…' : '扫描目录'}
           </button>
+          <NsfwToggle hidden={hideNsfw} onChange={setHideNsfw} />
         </div>
       </header>
 

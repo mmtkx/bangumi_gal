@@ -164,6 +164,13 @@ impl SettingsService {
         })
     }
 
+    /// 快速切换「隐藏成人内容」。设置页整表单保存那条路径仍然照旧。
+    pub fn set_hide_nsfw(&self, hide: bool) -> ApiResult<()> {
+        self.store
+            .set(keys::HIDE_NSFW, if hide { "1" } else { "0" })?;
+        Ok(())
+    }
+
     /// 当前构建是否内置了 Bangumi 应用。
     ///
     /// 内置后凭据由软件固定，界面上不出现 App ID / Secret / 回调地址，

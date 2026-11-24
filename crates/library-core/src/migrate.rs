@@ -31,6 +31,16 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "0004_nsfw",
         sql: include_str!("../migrations/0004_nsfw.sql"),
     },
+    Migration {
+        version: 5,
+        name: "0005_categories",
+        sql: include_str!("../migrations/0005_categories.sql"),
+    },
+    Migration {
+        version: 6,
+        name: "0006_category_cover",
+        sql: include_str!("../migrations/0006_category_cover.sql"),
+    },
 ];
 
 /// 读取当前 schema 版本（`PRAGMA user_version`）。

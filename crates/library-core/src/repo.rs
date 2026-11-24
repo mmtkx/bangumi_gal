@@ -7,7 +7,7 @@ use crate::error::{CoreError, Result};
 use crate::model::{ItemKind, LibraryItem, NewItem, NsfwState, UpsertOutcome};
 use crate::time::now_iso8601;
 
-const ITEM_COLUMNS: &str =
+pub(crate) const ITEM_COLUMNS: &str =
     "id, kind, title, bangumi_subject_id, folder_path, created_at, updated_at, \
      collection_status, rating, collection_updated_at, file_filter, nsfw";
 
@@ -52,7 +52,7 @@ pub trait LibraryRepository: Send + Sync {
 
 /// `library_item` 的 SQLite 实现。
 pub struct SqliteRepository {
-    db: Arc<Db>,
+    pub(crate) db: Arc<Db>,
 }
 
 impl SqliteRepository {
@@ -71,7 +71,7 @@ impl SqliteRepository {
     }
 }
 
-fn map_item(row: &Row<'_>) -> rusqlite::Result<LibraryItem> {
+pub(crate) fn map_item(row: &Row<'_>) -> rusqlite::Result<LibraryItem> {
     let kind_raw: String = row.get(1)?;
     let kind = ItemKind::parse(&kind_raw).map_err(|err| {
         rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(err))

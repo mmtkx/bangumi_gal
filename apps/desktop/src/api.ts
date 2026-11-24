@@ -212,6 +212,33 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
+export interface AppFolder {
+  key: string;
+  label: string;
+  path: string;
+  /** app（软件自身用） / resource（资源根目录）。 */
+  kind: 'app' | 'resource';
+  exists: boolean;
+}
+
+/** 软件用到的全部目录（软件自身 + 资源根目录）。 */
+export function appFolders(): Promise<AppFolder[]> {
+  return call<AppFolder[]>('app_folders');
+}
+
+/** 用资源管理器打开目录。 */
+export function openFolder(path: string): Promise<void> {
+  return call<void>('open_folder', { path });
+}
+
+/**
+ * 全局切换「隐藏成人内容」：条目库与分类页右上角的圆钮。
+ * 与设置页的开关共用同一个键，返回最新设置。
+ */
+export function setHideNsfw(hide: boolean): Promise<Settings> {
+  return call<Settings>('set_hide_nsfw', { hide });
+}
+
 export function getSettings(): Promise<Settings> {
   return call<Settings>('get_settings');
 }
@@ -842,4 +869,102 @@ export function formatDuration(seconds: number): string {
     return `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
   }
   return `${minutes}:${String(rest).padStart(2, '0')}`;
+}
+
+// ---- 用户自定义分类 ----
+
+export interface Category {
+  id: string;
+  name: string;
+  parentId: string | null;
+  sortOrder: number;
+  /** 根为 1，后端算好，前端不用递归推导。 */
+  depth: number;
+  /** 直接挂在该分类下的条目数（不含子分类）。 */
+  itemCount: number;
+  /** 封面来源：title（黑底名称）/ image（本地图片）/ carousel（轮播子树条目封面）。 */
+  coverKind: 'title' | 'image' | 'carousel';
+  /** 自定义封面文件是否存在（只有 image 类可能为 true）。 */
+  hasCover: boolean;
+}
+
+export function listCategories(): Promise<Category[]> {
+  return call<Category[]>('list_categories');
+}
+
+/** 新建分类；`parentId` 为 null 表示建在根层。所有写操作都返回最新分类列表。 */
+export function createCategory(name: string, parentId: string | null): Promise<Category[]> {
+  return call<Category[]>('create_category', { name, parentId });
+}
+
+export function renameCategory(id: string, name: string): Promise<Category[]> {
+  return call<Category[]>('rename_category', { id, name });
+}
+
+export function moveCategory(
+  id: string,
+  parentId: string | null,
+  sortOrder: number | null,
+): Promise<Category[]> {
+  return call<Category[]>('move_category', { id, parentId, sortOrder });
+}
+
+/** 同级排序：delta 为 -1 上移、1 下移；到头时后端什么也不做。 */
+export function swapCategoryOrder(id: string, delta: number): Promise<Category[]> {
+  return call<Category[]>('swap_category_order', { id, delta });
+}
+
+export function deleteCategory(id: string): Promise<Category[]> {
+  return call<Category[]>('delete_category', { id });
+}
+
+export function assignItemsToCategory(categoryId: string, itemIds: string[]): Promise<Category[]> {
+  return call<Category[]>('assign_items_to_category', { categoryId, itemIds });
+}
+
+export function unassignItemsFromCategory(
+  categoryId: string,
+  itemIds: string[],
+): Promise<Category[]> {
+  return call<Category[]>('unassign_items_from_category', { categoryId, itemIds });
+}
+
+/** 详情页用：整体替换某个条目的分类集合。 */
+export function setItemCategories(itemId: string, categoryIds: string[]): Promise<Category[]> {
+  return call<Category[]>('set_item_categories', { itemId, categoryIds });
+}
+
+export function listCategoryItems(categoryId: string): Promise<ItemSummary[]> {
+  return call<ItemSummary[]>('list_category_items', { categoryId });
+}
+
+export function itemCategories(itemId: string): Promise<Category[]> {
+  return call<Category[]>('item_categories', { itemId });
+}
+
+/** 切换封面来源（title / carousel）。自定义图片走 setCategoryCoverImage。 */
+export function setCategoryCover(
+  id: string,
+  kind: Exclude<Category['coverKind'], 'image'>,
+): Promise<Category[]> {
+  return call<Category[]>('set_category_cover', { id, kind });
+}
+
+/** 保存用户选的封面图：data 为 base64（不含 data URL 前缀）。 */
+export function setCategoryCoverImage(
+  id: string,
+  fileName: string,
+  data: string,
+): Promise<Category[]> {
+  return call<Category[]>('set_category_cover_image', { id, fileName, data });
+}
+
+/** 自定义封面的 data URL（键为分类 id）。 */
+export function categoryCoverImages(): Promise<Record<string, string>> {
+  return call<Record<string, string>>('category_cover_images');
+}
+
+/** 轮播用：每个分类子树里的条目 id（最多 limit 个，已按 NSFW 设置过滤）。 */
+export function categoryCoverPreview(limit = 5): Promise<Record<string, string[]>> {
+  return call<Record<string, string[]>>('category_cover_preview', { limit });
 }
