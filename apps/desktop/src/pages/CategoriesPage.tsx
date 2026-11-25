@@ -17,6 +17,7 @@ import {
   setCategoryCover,
   setCategoryCoverImage,
   swapCategoryOrder,
+  unassignItemsFromCategory,
 } from '../api';
 import type { Category, ItemKind, ItemSummary } from '../api';
 import NsfwToggle from '../components/NsfwToggle';
@@ -294,6 +295,16 @@ export default function CategoriesPage({ onOpen }: Props) {
       setDrawerSelected([]);
       const name = categories.find((row) => row.id === categoryId)?.name ?? '分类';
       flash(`已把 ${itemIds.length} 个条目加入「${name}」`);
+    });
+  }
+
+  /// 从当前分类移出单个条目。只删归属，不碰条目记录与磁盘文件。
+  async function removeFromCategory(itemId: string) {
+    if (!currentId) return;
+    await run(async () => {
+      await applyCategories(unassignItemsFromCategory(currentId, [itemId]));
+      setLevelItems(await listCategoryItems(currentId));
+      flash('已从当前分类移出（未删除文件）');
     });
   }
 
@@ -697,6 +708,16 @@ export default function CategoriesPage({ onOpen }: Props) {
                   ) : (
                     <div className="cover-empty">{item.title.slice(0, 2)}</div>
                   )}
+                  <div className="cover-hover" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="btn btn-tiny"
+                      title="从当前分类移出；条目与磁盘文件都不会删除"
+                      onClick={() => void removeFromCategory(item.id)}
+                    >
+                      移出分类
+                    </button>
+                  </div>
                 </div>
                 <div className="cover-title" title={item.title}>
                   {item.title}

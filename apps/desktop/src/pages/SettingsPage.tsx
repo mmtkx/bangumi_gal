@@ -1,3 +1,4 @@
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useEffect, useState } from 'react';
 
 import {
@@ -34,7 +35,6 @@ import {
   type UpdateCheck,
   type UpdateProgress,
 } from '../api';
-import DirectoryPicker from '../components/DirectoryPicker';
 import ExePicker from '../components/ExePicker';
 
 type PickerTarget = 'anime' | 'game' | 'cache' | 'player' | 'plugin' | 'plugins';
@@ -105,7 +105,7 @@ export default function SettingsPage({ onSaved }: Props) {
   const [nsfwPicked, setNsfwPicked] = useState<string[]>([]);
   const [nsfwBusy, setNsfwBusy] = useState(false);
   const [nsfwNotice, setNsfwNotice] = useState<string | null>(null);
-  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [picker, setPicker] = useState<'player' | null>(null);
   const [plugins, setPlugins] = useState<PluginOverview | null>(null);
   const [pluginBusy, setPluginBusy] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogLocation | null>(null);
@@ -475,6 +475,33 @@ export default function SettingsPage({ onSaved }: Props) {
     }
   }
 
+  /// 目录一律走系统选择对话框：Web 的 input[type=file] 拿不到真实路径。
+  async function pickDirectory(target: Exclude<PickerTarget, 'player'>) {
+    const initial =
+      target === 'anime'
+        ? animeRoot
+        : target === 'game'
+          ? gameRoot
+          : target === 'cache'
+            ? cacheDir
+            : target === 'plugins'
+              ? pluginsDir || (settings?.defaultPluginsDir ?? '')
+              : (plugins?.root ?? '');
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: PICKER_TITLE[target],
+        defaultPath: initial.trim() === '' ? undefined : initial,
+      });
+      if (typeof picked === 'string' && picked.trim() !== '') {
+        handlePick(target, picked);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function handlePick(target: PickerTarget, path: string) {
     if (target === 'anime') setAnimeRoot(path);
     else if (target === 'game') setGameRoot(path);
@@ -550,7 +577,7 @@ export default function SettingsPage({ onSaved }: Props) {
                   value={animeRoot}
                   onChange={(event) => setAnimeRoot(event.target.value)}
                 />
-                <button type="button" className="btn" onClick={() => setPicker('anime')}>
+                <button type="button" className="btn" onClick={() => void pickDirectory('anime')}>
                   浏览…
                 </button>
               </div>
@@ -565,7 +592,7 @@ export default function SettingsPage({ onSaved }: Props) {
                   value={gameRoot}
                   onChange={(event) => setGameRoot(event.target.value)}
                 />
-                <button type="button" className="btn" onClick={() => setPicker('game')}>
+                <button type="button" className="btn" onClick={() => void pickDirectory('game')}>
                   浏览…
                 </button>
               </div>
@@ -587,7 +614,7 @@ export default function SettingsPage({ onSaved }: Props) {
                   value={cacheDir}
                   onChange={(event) => setCacheDir(event.target.value)}
                 />
-                <button type="button" className="btn" onClick={() => setPicker('cache')}>
+                <button type="button" className="btn" onClick={() => void pickDirectory('cache')}>
                   浏览…
                 </button>
                 <button type="button" className="btn" onClick={() => setCacheDir('')}>
@@ -738,7 +765,7 @@ export default function SettingsPage({ onSaved }: Props) {
                 <button
                   type="button"
                   className="btn btn-tiny"
-                  onClick={() => setPicker('plugin')}
+                  onClick={() => void pickDirectory('plugin')}
                   disabled={pluginBusy !== null}
                 >
                   安装插件…
@@ -754,7 +781,7 @@ export default function SettingsPage({ onSaved }: Props) {
                   value={pluginsDir}
                   onChange={(event) => setPluginsDir(event.target.value)}
                 />
-                <button type="button" className="btn" onClick={() => setPicker('plugins')}>
+                <button type="button" className="btn" onClick={() => void pickDirectory('plugins')}>
                   浏览…
                 </button>
                 <button type="button" className="btn" onClick={() => setPluginsDir('')}>
@@ -1124,32 +1151,13 @@ export default function SettingsPage({ onSaved }: Props) {
         </div>
       </div>
 
-      {picker === 'player' ? (
+      {picker === 'player' && (
         <ExePicker
           title={PICKER_TITLE.player}
           initialPath={playerPath}
           onPick={(path) => handlePick('player', path)}
           onClose={() => setPicker(null)}
         />
-      ) : (
-        picker && (
-          <DirectoryPicker
-            title={PICKER_TITLE[picker]}
-            initialPath={
-              picker === 'anime'
-                ? animeRoot
-                : picker === 'game'
-                  ? gameRoot
-                  : picker === 'cache'
-                    ? cacheDir
-                    : picker === 'plugins'
-                      ? pluginsDir || (settings?.defaultPluginsDir ?? '')
-                      : (plugins?.root ?? '')
-            }
-            onPick={(path) => handlePick(picker, path)}
-            onClose={() => setPicker(null)}
-          />
-        )
       )}
     </div>
   );

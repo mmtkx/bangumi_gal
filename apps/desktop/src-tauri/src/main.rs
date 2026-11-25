@@ -111,6 +111,8 @@ fn main() {
         // 私钥只在打包时通过 TAURI_SIGNING_PRIVATE_KEY 提供，绝不进仓库。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        // 系统选择对话框：设置页的根目录选择走它，才能拿到真实路径。
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app
