@@ -111,6 +111,8 @@ fn main() {
         // 私钥只在打包时通过 TAURI_SIGNING_PRIVATE_KEY 提供，绝不进仓库。
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        // 系统选择对话框：设置页的根目录选择走它，才能拿到真实路径。
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = app
@@ -223,6 +225,24 @@ fn main() {
             commands::refresh_metadata_batch,
             commands::trash_items,
             commands::discard_sync_entry,
+            commands::app_folders,
+            commands::open_folder,
+            commands::set_hide_nsfw,
+            commands::list_categories,
+            commands::create_category,
+            commands::rename_category,
+            commands::move_category,
+            commands::delete_category,
+            commands::swap_category_order,
+            commands::assign_items_to_category,
+            commands::unassign_items_from_category,
+            commands::set_item_categories,
+            commands::list_category_items,
+            commands::item_categories,
+            commands::set_category_cover,
+            commands::set_category_cover_image,
+            commands::category_cover_images,
+            commands::category_cover_preview,
             commands::ui_ready,
         ])
         .run(tauri::generate_context!());

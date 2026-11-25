@@ -7,12 +7,13 @@ use tauri::State;
 
 use crate::dirs;
 use crate::dto::{
-    AccountDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto, BatchRefreshDto,
-    CacheClearDto, CacheStatsDto, CollectionDto, ConflictDto, DeleteItemDto, DirListingDto,
-    FileEntryDto, GameStatusDto, ImportReportDto, ItemDetailDto, ItemSummaryDto, MetadataCacheDto,
-    NsfwRescanDto, PluginEntryDto, PluginInvocationDto, PluginOverviewDto, ProgressDto,
-    PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
-    SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
+    AccountDto, AppFolderDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto,
+    BatchRefreshDto, CacheClearDto, CacheStatsDto, CategoryDto, CollectionDto, ConflictDto,
+    DeleteItemDto, DirListingDto, FileEntryDto, GameStatusDto, ImportReportDto, ItemDetailDto,
+    ItemSummaryDto, MetadataCacheDto, NsfwRescanDto, PluginEntryDto, PluginInvocationDto,
+    PluginOverviewDto, ProgressDto, PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto,
+    SettingsDto, SubjectPreviewDto, SubjectSearchHitDto, SyncQueueDto, SyncStatsDto,
+    UpdateCheckDto,
 };
 use crate::error::{ApiResult, AppError};
 use crate::logs::LogInfoDto;
@@ -662,4 +663,182 @@ pub async fn plugin_invoke(
     let services = Arc::clone(services.inner());
     run_blocking(move || services.plugin_invoke(&id, input.unwrap_or(serde_json::Value::Null)))
         .await
+}
+
+/// 软件用到的全部目录（软件自身 / 资源根目录两类）。
+#[tauri::command]
+pub async fn app_folders(services: State<'_, Arc<Services>>) -> ApiResult<Vec<AppFolderDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.app_folders()).await
+}
+
+/// 用资源管理器打开目录。
+#[tauri::command]
+pub async fn open_folder(services: State<'_, Arc<Services>>, path: String) -> ApiResult<()> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.open_folder(&path)).await
+}
+
+/// 全局切换「隐藏成人内容」，条目库与分类页右上角的圆钮都用它。
+#[tauri::command]
+pub async fn set_hide_nsfw(
+    services: State<'_, Arc<Services>>,
+    hide: bool,
+) -> ApiResult<SettingsDto> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.set_hide_nsfw(hide)).await
+}
+
+// ---- 用户自定义分类 ----
+
+/// 全部分类（平铺，前端按 parentId 组树）。
+#[tauri::command]
+pub async fn list_categories(services: State<'_, Arc<Services>>) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.list_categories()).await
+}
+
+/// 新建分类；`parentId` 为空表示建在根层。返回最新分类列表。
+#[tauri::command]
+pub async fn create_category(
+    services: State<'_, Arc<Services>>,
+    name: String,
+    parent_id: Option<String>,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.create_category(&name, parent_id.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn rename_category(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    name: String,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.rename_category(&id, &name)).await
+}
+
+/// 移动分类（拖拽改父级 / 排序）。
+#[tauri::command]
+pub async fn move_category(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    parent_id: Option<String>,
+    sort_order: Option<i64>,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.move_category(&id, parent_id.as_deref(), sort_order)).await
+}
+
+#[tauri::command]
+pub async fn swap_category_order(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    delta: i64,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.swap_category_order(&id, delta)).await
+}
+
+#[tauri::command]
+pub async fn delete_category(
+    services: State<'_, Arc<Services>>,
+    id: String,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.delete_category(&id)).await
+}
+
+/// 批量归类（拖拽条目到分类、或多选后加入）。
+#[tauri::command]
+pub async fn assign_items_to_category(
+    services: State<'_, Arc<Services>>,
+    category_id: String,
+    item_ids: Vec<String>,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.assign_items(&category_id, &item_ids)).await
+}
+
+#[tauri::command]
+pub async fn unassign_items_from_category(
+    services: State<'_, Arc<Services>>,
+    category_id: String,
+    item_ids: Vec<String>,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.unassign_items(&category_id, &item_ids)).await
+}
+
+/// 详情页用：整体替换某个条目的分类。
+#[tauri::command]
+pub async fn set_item_categories(
+    services: State<'_, Arc<Services>>,
+    item_id: String,
+    category_ids: Vec<String>,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.set_item_categories(&item_id, &category_ids)).await
+}
+
+#[tauri::command]
+pub async fn list_category_items(
+    services: State<'_, Arc<Services>>,
+    category_id: String,
+) -> ApiResult<Vec<ItemSummaryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.list_category_items(&category_id)).await
+}
+
+/// 切换分类卡封面来源（title / carousel）。自定义图片走 `set_category_cover_image`。
+#[tauri::command]
+pub async fn set_category_cover(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    kind: String,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.set_category_cover(&id, &kind)).await
+}
+
+/// 保存用户选的封面图：`data` 为 base64（不含 data URL 前缀）。
+#[tauri::command]
+pub async fn set_category_cover_image(
+    services: State<'_, Arc<Services>>,
+    id: String,
+    file_name: String,
+    data: String,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.set_category_cover_image(&id, &file_name, &data)).await
+}
+
+/// 自定义封面的 data URL（键为分类 id）。
+#[tauri::command]
+pub async fn category_cover_images(
+    services: State<'_, Arc<Services>>,
+) -> ApiResult<std::collections::HashMap<String, String>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.category_cover_images()).await
+}
+
+/// 轮播用：每个分类子树里的条目 id（最多 limit 个）。
+#[tauri::command]
+pub async fn category_cover_preview(
+    services: State<'_, Arc<Services>>,
+    limit: Option<usize>,
+) -> ApiResult<std::collections::HashMap<String, Vec<String>>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.category_cover_preview(limit.unwrap_or(5))).await
+}
+
+/// 某个条目所属的分类（详情页标签块）。
+#[tauri::command]
+pub async fn item_categories(
+    services: State<'_, Arc<Services>>,
+    item_id: String,
+) -> ApiResult<Vec<CategoryDto>> {
+    let services = Arc::clone(services.inner());
+    run_blocking(move || services.item_categories(&item_id)).await
 }

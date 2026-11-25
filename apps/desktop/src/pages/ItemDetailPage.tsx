@@ -11,7 +11,9 @@ import {
   formatDuration,
   gameStatus as fetchGameStatus,
   getItem,
+  itemCategories,
   itemCover,
+  listCategories,
   listProgress,
   openExternal,
   openInExplorer,
@@ -20,10 +22,12 @@ import {
   searchBangumi,
   setCollection,
   setGameBinding,
+  setItemCategories,
   setProgress as saveProgress,
   startGame,
   subscribeAppEvents,
   type ActiveSession,
+  type Category,
   type GameStatus,
   type ItemDetail,
   type ProgressRow,
@@ -140,6 +144,11 @@ export default function ItemDetailPage({ id, onBack, onChanged }: Props) {
   const [previewTarget, setPreviewTarget] = useState<number | null>(null);
   const pluginContainerRef = useRef<HTMLDivElement | null>(null);
   const [pluginPanelCount, setPluginPanelCount] = useState(0);
+  // 所属分类：allCategories 供下拉选择，mineCategories 是当前条目已属的分类。
+  const [allCategories, setAllCategories] = useState<Category[]>([]);
+  const [mineCategories, setMineCategories] = useState<Category[]>([]);
+  const [categoryPick, setCategoryPick] = useState('');
+  const [savingCategories, setSavingCategories] = useState(false);
 
   // 来源统计：同一集可能有多个压制组版本，详情页据此提示区别。
   const groups = useMemo(() => {
@@ -247,6 +256,47 @@ export default function ItemDetailPage({ id, onBack, onChanged }: Props) {
       if (unlisten) unlisten();
     };
   }, [id, refreshGame, refreshPlayback]);
+
+  const refreshCategories = useCallback(async () => {
+    const [all, mine] = await Promise.all([listCategories(), itemCategories(id)]);
+    setAllCategories(all);
+    setMineCategories(mine);
+  }, [id]);
+
+  useEffect(() => {
+    refreshCategories().catch((err: unknown) => console.warn('读取分类失败', err));
+  }, [refreshCategories]);
+
+  async function addCategory(categoryId: string) {
+    if (categoryId === '') return;
+    setSavingCategories(true);
+    setError(null);
+    try {
+      await setItemCategories(id, [...mineCategories.map((row) => row.id), categoryId]);
+      setCategoryPick('');
+      await refreshCategories();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingCategories(false);
+    }
+  }
+
+  async function removeCategory(categoryId: string) {
+    setSavingCategories(true);
+    setError(null);
+    try {
+      await setItemCategories(
+        id,
+        mineCategories.map((row) => row.id).filter((value) => value !== categoryId),
+      );
+      await refreshCategories();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingCategories(false);
+    }
+  }
 
   async function submitSubject(nextValue: number | null) {
     setSavingSubject(true);
@@ -636,6 +686,53 @@ export default function ItemDetailPage({ id, onBack, onChanged }: Props) {
 
       {error && <div className="banner banner-error">{error}</div>}
       {notice && <div className="banner banner-ok">{notice}</div>}
+
+      <section className="card">
+        <h2>所属分类</h2>
+        <p className="muted">分类是本地组织方式，不影响条目本身，也不会同步到 Bangumi。</p>
+        <div className="chip-row">
+          {mineCategories.length === 0 && <span className="muted">还没有加入任何分类</span>}
+          {mineCategories.map((category) => (
+            <span key={category.id} className="chip chip-inline">
+              {category.name}
+              <button
+                type="button"
+                className="chip-remove"
+                title="从该分类移出"
+                disabled={savingCategories}
+                onClick={() => void removeCategory(category.id)}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+        <div className="inline-form">
+          <select
+            className="input"
+            value={categoryPick}
+            onChange={(event) => setCategoryPick(event.target.value)}
+          >
+            <option value="">选择分类…</option>
+            {allCategories
+              .filter((category) => !mineCategories.some((mine) => mine.id === category.id))
+              .map((category) => (
+                <option key={category.id} value={category.id}>
+                  {'　'.repeat(Math.max(0, category.depth - 1))}
+                  {category.name}
+                </option>
+              ))}
+          </select>
+          <button
+            type="button"
+            className="btn"
+            disabled={savingCategories || categoryPick === ''}
+            onClick={() => void addCategory(categoryPick)}
+          >
+            加入分类
+          </button>
+        </div>
+      </section>
 
       {isGame && (
         <section className="card">

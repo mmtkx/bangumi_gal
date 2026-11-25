@@ -13,6 +13,7 @@ import {
 import type { AccountInfo, UpdateCheck } from './api';
 import IssueBanner from './components/IssueBanner';
 import AccountPage from './pages/AccountPage';
+import CategoriesPage from './pages/CategoriesPage';
 import ItemDetailPage from './pages/ItemDetailPage';
 import LibraryPage from './pages/LibraryPage';
 import SettingsPage from './pages/SettingsPage';
@@ -20,7 +21,8 @@ import SyncPage from './pages/SyncPage';
 
 type View =
   | { name: 'library' }
-  | { name: 'detail'; id: string }
+  | { name: 'detail'; id: string; from: 'library' | 'categories' }
+  | { name: 'categories' }
   | { name: 'sync' }
   | { name: 'account' }
   | { name: 'settings' };
@@ -110,11 +112,15 @@ export default function App() {
     getCurrentWindow()
       .onDragDropEvent((event) => {
         const payload = event.payload;
-        if (payload.type === 'enter' || payload.type === 'over') {
-          setDragging(true);
+        if (payload.type === 'enter') {
+          // 只有真的带着文件才算导入。页面内拖拽（分类页的指针拖拽不会走到这里，
+          // 但将来若有 HTML5 DnD）会以空 paths 触发 enter，不能弹导入遮罩。
+          setDragging(payload.paths.length > 0);
+        } else if (payload.type === 'over') {
+          // over 事件没有 paths，保持当前状态，避免每帧把遮罩点亮。
         } else if (payload.type === 'drop') {
           setDragging(false);
-          void handleDrop(payload.paths);
+          if (payload.paths.length > 0) void handleDrop(payload.paths);
         } else {
           setDragging(false);
         }
@@ -220,12 +226,26 @@ export default function App() {
           <button
             type="button"
             className={
-              view.name === 'library' || view.name === 'detail' ? 'nav-item is-active' : 'nav-item'
+              view.name === 'library' || (view.name === 'detail' && view.from === 'library')
+                ? 'nav-item is-active'
+                : 'nav-item'
             }
             onClick={() => setView({ name: 'library' })}
           >
             <span className="nav-icon">▤</span>
             条目库
+          </button>
+          <button
+            type="button"
+            className={
+              view.name === 'categories' || (view.name === 'detail' && view.from === 'categories')
+                ? 'nav-item is-active'
+                : 'nav-item'
+            }
+            onClick={() => setView({ name: 'categories' })}
+          >
+            <span className="nav-icon">▥</span>
+            分类
           </button>
           <button
             type="button"
@@ -286,16 +306,21 @@ export default function App() {
         {view.name === 'library' && (
           <LibraryPage
             version={libraryVersion}
-            onOpen={(id) => setView({ name: 'detail', id })}
+            onOpen={(id) => setView({ name: 'detail', id, from: 'library' })}
             onConfigure={() => setView({ name: 'settings' })}
           />
         )}
         {view.name === 'detail' && (
           <ItemDetailPage
             id={view.id}
-            onBack={() => setView({ name: 'library' })}
+            onBack={() =>
+              setView(view.from === 'categories' ? { name: 'categories' } : { name: 'library' })
+            }
             onChanged={bumpLibrary}
           />
+        )}
+        {view.name === 'categories' && (
+          <CategoriesPage onOpen={(id) => setView({ name: 'detail', id, from: 'categories' })} />
         )}
         {view.name === 'sync' && <SyncPage />}
         {view.name === 'account' && <AccountPage />}

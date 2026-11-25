@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "M1 默认能力：仅开放核心事件与窗口能力，未引入任何插件权限",
+  "description": "基础能力：核心事件与窗口，以及目录选择对话框（设置页选根目录用）",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

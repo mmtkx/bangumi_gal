@@ -9,6 +9,9 @@ use bangumi_sync::{
 };
 use launcher::{Launcher, RunningGame};
 use library_core::binding::SqliteGameBindingRepository;
+use library_core::category::{
+    item_key as category_item_key, parse_cover_kind, Category, CategoryRepository, COVER_IMAGE,
+};
 use library_core::db::Db;
 use library_core::metadata::{MetadataIndexRepository, SqliteMetadataIndexRepository};
 use library_core::model::{ItemKind, LibraryItem, MediaProbe, NsfwState, ProgressSource};
@@ -33,10 +36,10 @@ use scanner_game::GameScanner;
 
 use crate::delete::{DeleteMode, FolderRemover, SystemRemover};
 use crate::dto::{
-    AccountDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto, BatchRefreshDto,
-    CacheClearDto, CacheStatsDto, CollectionDto, ConflictDto, DeleteItemDto, GameBindingDto,
-    GameStatusDto, ImportReportDto, ImportedItemDto, ItemDetailDto, ItemSummaryDto,
-    MediaSummaryDto, MetadataCacheDto, NsfwRescanDto, PluginDto, PluginEntryDto,
+    AccountDto, AppFolderDto, AutoMatchReportDto, BangumiStatusDto, BatchDeleteDto,
+    BatchRefreshDto, CacheClearDto, CacheStatsDto, CategoryDto, CollectionDto, ConflictDto,
+    DeleteItemDto, GameBindingDto, GameStatusDto, ImportReportDto, ImportedItemDto, ItemDetailDto,
+    ItemSummaryDto, MediaSummaryDto, MetadataCacheDto, NsfwRescanDto, PluginDto, PluginEntryDto,
     PluginInvocationDto, PluginOverviewDto, PreviewRelatedDto, PreviewTagDto, ProgressDto,
     PullReportDto, PushReportDto, ResolveReportDto, ScanSummaryDto, SettingsDto, SubjectPreviewDto,
     SubjectSearchHitDto, SyncQueueDto, SyncStatsDto, UpdateCheckDto,
@@ -524,6 +527,9 @@ impl Services {
         let total_unchanged = anime_report.as_ref().map_or(0, |r| r.unchanged)
             + game_report.as_ref().map_or(0, |r| r.unchanged);
 
+        // 扫描会 prune 掉失效条目，分类归属按身份键记，可能因此留下孤儿。
+        self.prune_category_links();
+
         Ok(ScanSummaryDto {
             anime: anime_report,
             game: game_report,
@@ -548,12 +554,406 @@ impl Services {
         })
     }
 
+    /// 软件用到的全部目录：软件自身一类、资源根目录另一类。
+    ///
+    /// 只读不写；不存在的目录也返回（`exists=false`），让用户知道该去哪建。
+    pub fn app_folders(&self) -> ApiResult<Vec<AppFolderDto>> {
+        let settings = self.settings.load()?;
+        let plugins_dir = settings
+            .plugins_dir
+            .clone()
+            .unwrap_or_else(|| self.default_plugins_dir.clone());
+        let data_dir = self
+            .db
+            .path()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf);
+
+        let mut rows: Vec<(&str, &str, &str, PathBuf)> = Vec::new();
+        if let Some(dir) = data_dir {
+            rows.push(("data", "数据目录（数据库）", "app", dir));
+        }
+        rows.push(("logs", "日志目录", "app", crate::logs::default_log_dir()));
+        rows.push((
+            "metadata",
+            "元数据缓存",
+            "app",
+            settings.metadata_cache_dir.clone(),
+        ));
+        rows.push(("plugins", "插件目录", "app", plugins_dir));
+        rows.push(("covers", "分类封面", "app", Self::category_cover_dir()));
+        if let Some(root) = settings.anime_root.clone() {
+            rows.push(("anime", "动画根目录", "resource", root));
+        }
+        if let Some(root) = settings.game_root.clone() {
+            rows.push(("game", "游戏根目录", "resource", root));
+        }
+
+        Ok(rows
+            .into_iter()
+            .map(|(key, label, kind, path)| AppFolderDto {
+                key: key.to_owned(),
+                label: label.to_owned(),
+                exists: path.is_dir(),
+                path: path.to_string_lossy().to_string(),
+                kind: kind.to_owned(),
+            })
+            .collect())
+    }
+
+    /// 用资源管理器打开一个目录（只接受已存在的目录）。
+    pub fn open_folder(&self, path: &str) -> ApiResult<()> {
+        let dir = PathBuf::from(path.trim());
+        if !dir.is_dir() {
+            return Err(AppError::Validation(format!(
+                "目录不存在：{}",
+                dir.display()
+            )));
+        }
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|err| AppError::Internal(format!("打开资源管理器失败：{err}")))?;
+        Ok(())
+    }
+
+    /// 全局开关：是否隐藏成人内容。返回最新设置，前端据此刷新两处界面。
+    pub fn set_hide_nsfw(&self, hide: bool) -> ApiResult<SettingsDto> {
+        self.settings.set_hide_nsfw(hide)?;
+        Ok(self.settings_to_dto(self.settings.load()?))
+    }
+
+    // ---- 用户自定义分类 ----
+
+    /// 平铺返回全部分类（含层级与条目数），树结构由前端按 `parentId` 组。
+    pub fn list_categories(&self) -> ApiResult<Vec<CategoryDto>> {
+        self.category_dtos()
+    }
+
+    pub fn create_category(
+        &self,
+        name: &str,
+        parent_id: Option<&str>,
+    ) -> ApiResult<Vec<CategoryDto>> {
+        self.repo.create_category(name, parent_id)?;
+        self.category_dtos()
+    }
+
+    pub fn rename_category(&self, id: &str, name: &str) -> ApiResult<Vec<CategoryDto>> {
+        self.repo.rename_category(id, name)?;
+        self.category_dtos()
+    }
+
+    pub fn move_category(
+        &self,
+        id: &str,
+        parent_id: Option<&str>,
+        sort_order: Option<i64>,
+    ) -> ApiResult<Vec<CategoryDto>> {
+        self.repo.move_category(id, parent_id, sort_order)?;
+        self.category_dtos()
+    }
+
+    /// 删除分类。子分类与归属级联清理，条目与磁盘文件不受影响；
+    /// 被删掉的分类（含其子树）的自定义封面副本一并清理。
+    pub fn delete_category(&self, id: &str) -> ApiResult<Vec<CategoryDto>> {
+        let categories = self.repo.list_categories()?;
+        let mut doomed: HashSet<String> = HashSet::new();
+        doomed.insert(id.to_owned());
+        // 深度有限（≤5），逐层扩散足够，不必写递归。
+        loop {
+            let before = doomed.len();
+            for category in &categories {
+                if let Some(parent) = &category.parent_id {
+                    if doomed.contains(parent) {
+                        doomed.insert(category.id.clone());
+                    }
+                }
+            }
+            if doomed.len() == before {
+                break;
+            }
+        }
+        let covers: Vec<String> = categories
+            .iter()
+            .filter(|category| doomed.contains(&category.id))
+            .filter_map(|category| category.cover_path.clone())
+            .collect();
+
+        self.repo.delete_category(id)?;
+
+        for path in covers {
+            if let Err(err) = std::fs::remove_file(&path) {
+                tracing::debug!(path = %path, error = %err, "删除分类封面副本失败");
+            }
+        }
+        self.category_dtos()
+    }
+
+    /// 同级排序：`delta` 为 -1 上移、1 下移。
+    pub fn swap_category_order(&self, id: &str, delta: i64) -> ApiResult<Vec<CategoryDto>> {
+        self.repo.swap_order(id, delta)?;
+        self.category_dtos()
+    }
+
+    /// 批量把条目挂到分类下（拖拽 / 多选都走这里）。
+    pub fn assign_items(
+        &self,
+        category_id: &str,
+        item_ids: &[String],
+    ) -> ApiResult<Vec<CategoryDto>> {
+        let keys = self.keys_for_items(item_ids)?;
+        if !keys.is_empty() {
+            self.repo.assign_items(category_id, &keys)?;
+        }
+        self.category_dtos()
+    }
+
+    pub fn unassign_items(
+        &self,
+        category_id: &str,
+        item_ids: &[String],
+    ) -> ApiResult<Vec<CategoryDto>> {
+        let keys = self.keys_for_items(item_ids)?;
+        if !keys.is_empty() {
+            self.repo.unassign_items(category_id, &keys)?;
+        }
+        self.category_dtos()
+    }
+
+    /// 详情页用：整体替换某个条目的分类集合。
+    pub fn set_item_categories(
+        &self,
+        item_id: &str,
+        category_ids: &[String],
+    ) -> ApiResult<Vec<CategoryDto>> {
+        let item = self.require_item(item_id)?;
+        let key = category_item_key(&item.folder_path, item.file_filter.as_deref());
+        self.repo.set_item_categories(&key, category_ids)?;
+        self.category_dtos()
+    }
+
+    pub fn list_category_items(&self, category_id: &str) -> ApiResult<Vec<ItemSummaryDto>> {
+        let items = self.repo.list_items_in_category(category_id)?;
+        Ok(items.iter().map(|item| self.to_summary(item)).collect())
+    }
+
+    /// 某个条目当前所属的分类（详情页的标签块）。
+    pub fn item_categories(&self, item_id: &str) -> ApiResult<Vec<CategoryDto>> {
+        let item = self.require_item(item_id)?;
+        let key = category_item_key(&item.folder_path, item.file_filter.as_deref());
+        let ids = self.repo.category_ids_for_item(&key)?;
+        let mut categories = self.category_dtos()?;
+        categories.retain(|category| ids.contains(&category.id));
+        Ok(categories)
+    }
+
+    /// 分类封面副本目录：与数据库同级的应用数据目录。
+    fn category_cover_dir() -> PathBuf {
+        match std::env::var_os("APPDATA") {
+            Some(base) => PathBuf::from(base)
+                .join("com.lagm.desktop")
+                .join("category-covers"),
+            None => std::env::temp_dir().join("lagm").join("category-covers"),
+        }
+    }
+
+    /// 切换封面来源。`title` / `carousel` 不需要图片，直接清掉自定义副本。
+    pub fn set_category_cover(&self, id: &str, kind: &str) -> ApiResult<Vec<CategoryDto>> {
+        let kind = parse_cover_kind(kind);
+        if kind == COVER_IMAGE {
+            return Err(AppError::Validation(
+                "自定义图片请走「本地图片」入口".to_owned(),
+            ));
+        }
+        let previous = self.repo.category_by_id(id)?;
+        self.repo.set_category_cover(id, kind, None)?;
+        self.remove_cover_file(previous.and_then(|category| category.cover_path));
+        self.category_dtos()
+    }
+
+    /// 保存用户选择的封面图（前端用 `<input type=file>` 读字节，走系统文件对话框）。
+    ///
+    /// 只接受 data 部分，不带 `data:image/png;base64,` 前缀；扩展名从文件名取。
+    pub fn set_category_cover_image(
+        &self,
+        id: &str,
+        file_name: &str,
+        data: &str,
+    ) -> ApiResult<Vec<CategoryDto>> {
+        let ext = Path::new(file_name)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        const ALLOWED: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
+        if !ALLOWED.contains(&ext.as_str()) {
+            return Err(AppError::Validation(
+                "只支持 png / jpg / webp / bmp / gif".to_owned(),
+            ));
+        }
+        let bytes = crate::cover::base64_decode(data)
+            .ok_or_else(|| AppError::Validation("图片数据无法解析".to_owned()))?;
+        if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+            return Err(AppError::Validation("图片为空或超过 12 MB".to_owned()));
+        }
+
+        let previous = self.repo.category_by_id(id)?;
+        let dir = Self::category_cover_dir();
+        std::fs::create_dir_all(&dir).map_err(|err| {
+            AppError::Core(CoreError::Io {
+                path: dir.clone(),
+                reason: err.to_string(),
+            })
+        })?;
+        let target = dir.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+        std::fs::write(&target, &bytes).map_err(|err| {
+            AppError::Core(CoreError::Io {
+                path: target.clone(),
+                reason: err.to_string(),
+            })
+        })?;
+
+        if let Err(err) =
+            self.repo
+                .set_category_cover(id, COVER_IMAGE, Some(&target.to_string_lossy()))
+        {
+            // 写库失败时不要留下孤儿文件。
+            let _ = std::fs::remove_file(&target);
+            return Err(err.into());
+        }
+        self.remove_cover_file(previous.and_then(|category| category.cover_path));
+        self.category_dtos()
+    }
+
+    fn remove_cover_file(&self, path: Option<String>) {
+        let Some(path) = path else { return };
+        if let Err(err) = std::fs::remove_file(&path) {
+            tracing::debug!(path = %path, error = %err, "删除旧封面副本失败");
+        }
+    }
+
+    /// 自定义封面的 data URL（键为分类 id）。只有 image 类且文件存在时返回。
+    pub fn category_cover_images(&self) -> ApiResult<HashMap<String, String>> {
+        let mut out = HashMap::new();
+        for category in self.repo.list_categories()? {
+            if category.cover_kind != COVER_IMAGE {
+                continue;
+            }
+            let Some(path) = category.cover_path else {
+                continue;
+            };
+            match std::fs::read(&path) {
+                Ok(bytes) if !bytes.is_empty() => {
+                    out.insert(category.id, crate::cover::data_url(&bytes));
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
+    /// 轮播用：每个分类子树里的条目 id（直接条目优先，再递归子分类），最多 `limit` 个。
+    ///
+    /// 子分类卡本身不参与轮播，只贡献它下面的条目；隐藏成人内容时一并过滤。
+    pub fn category_cover_preview(&self, limit: usize) -> ApiResult<HashMap<String, Vec<String>>> {
+        let categories = self.repo.list_categories()?;
+        let direct = self.repo.item_ids_by_category()?;
+        let hide_nsfw = self
+            .settings
+            .load()
+            .map(|value| value.hide_nsfw)
+            .unwrap_or(true);
+        let allowed: HashSet<String> = self
+            .repo
+            .list_items(None)?
+            .into_iter()
+            .filter(|item| !(hide_nsfw && item.nsfw == NsfwState::Adult))
+            .map(|item| item.id)
+            .collect();
+
+        let mut children: HashMap<String, Vec<String>> = HashMap::new();
+        for category in &categories {
+            if let Some(parent) = &category.parent_id {
+                children
+                    .entry(parent.clone())
+                    .or_default()
+                    .push(category.id.clone());
+            }
+        }
+
+        let limit = limit.clamp(1, 12);
+        let mut out = HashMap::new();
+        for category in &categories {
+            let mut ids = Vec::new();
+            collect_preview_ids(&category.id, &direct, &children, &allowed, limit, &mut ids);
+            out.insert(category.id.clone(), ids);
+        }
+        Ok(out)
+    }
+
+    fn category_dtos(&self) -> ApiResult<Vec<CategoryDto>> {
+        let categories = self.repo.list_categories()?;
+        let counts = self.repo.counts_by_category()?;
+        let index: HashMap<String, &Category> = categories
+            .iter()
+            .map(|category| (category.id.clone(), category))
+            .collect();
+        let mut out: Vec<CategoryDto> = categories
+            .iter()
+            .map(|category| CategoryDto {
+                id: category.id.clone(),
+                name: category.name.clone(),
+                parent_id: category.parent_id.clone(),
+                sort_order: category.sort_order,
+                depth: category_depth(&index, category),
+                item_count: counts.get(&category.id).copied().unwrap_or(0),
+                cover_kind: parse_cover_kind(&category.cover_kind).to_owned(),
+                has_cover: category.cover_kind == COVER_IMAGE
+                    && category
+                        .cover_path
+                        .as_deref()
+                        .is_some_and(|path| Path::new(path).is_file()),
+            })
+            .collect();
+        out.sort_by(|left, right| {
+            left.depth
+                .cmp(&right.depth)
+                .then_with(|| left.sort_order.cmp(&right.sort_order))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(out)
+    }
+
+    fn keys_for_items(&self, item_ids: &[String]) -> ApiResult<Vec<String>> {
+        let mut keys = Vec::new();
+        for id in item_ids {
+            if let Some(item) = self.repo.get_item(id)? {
+                keys.push(category_item_key(
+                    &item.folder_path,
+                    item.file_filter.as_deref(),
+                ));
+            }
+        }
+        Ok(keys)
+    }
+
+    /// 清理指向已不存在条目的分类归属。扫描与删除后各调一次，失败只记日志。
+    fn prune_category_links(&self) {
+        match self.repo.prune_links() {
+            Ok(0) => {}
+            Ok(removed) => tracing::info!(removed, "清理失效的分类归属"),
+            Err(err) => tracing::warn!(error = %err, "清理分类归属失败"),
+        }
+    }
+
     /// 清空条目记录（可按类型）：只删数据库，磁盘上的文件一概不碰。
     ///
     /// 进度、绑定、同步队列、冲突由外键级联清理；元数据缓存目录保留，
     /// 因为它是按 subject_id 存的，与条目记录无关。
     pub fn clear_items(&self, kind: Option<ItemKind>) -> ApiResult<usize> {
         let removed = self.repo.delete_all_items(kind)?;
+        self.prune_category_links();
         tracing::info!(
             removed,
             kind = ?kind,
@@ -1597,6 +1997,7 @@ impl Services {
         crate::delete::remove_folder(&folder, mode, self.remover.as_ref())
             .map_err(AppError::Internal)?;
         self.repo.delete_item(&item.id)?;
+        self.prune_category_links();
         self.bus.publish(AppEvent::LibraryItemDeleted {
             id: item.id.clone(),
             kind: item.kind,
@@ -2764,6 +3165,55 @@ fn summary_from(item: &LibraryItem, probe: &MediaProbe) -> ItemSummaryDto {
             episode_hint: probe.episode_hint.clone(),
         },
     }
+}
+
+/// 轮播封面收集：先直属条目，再逐个子分类递归；达到上限即停，避免深树全量遍历。
+fn collect_preview_ids(
+    category_id: &str,
+    direct: &HashMap<String, Vec<String>>,
+    children: &HashMap<String, Vec<String>>,
+    allowed: &HashSet<String>,
+    limit: usize,
+    out: &mut Vec<String>,
+) {
+    if out.len() >= limit {
+        return;
+    }
+    if let Some(ids) = direct.get(category_id) {
+        for id in ids {
+            if out.len() >= limit {
+                return;
+            }
+            if allowed.contains(id) {
+                out.push(id.clone());
+            }
+        }
+    }
+    if let Some(kids) = children.get(category_id) {
+        for kid in kids {
+            collect_preview_ids(kid, direct, children, allowed, limit, out);
+            if out.len() >= limit {
+                return;
+            }
+        }
+    }
+}
+
+/// 分类深度：根为 1。父链断裂（数据异常）时按已走过的层数返回，不报错。
+fn category_depth(index: &HashMap<String, &Category>, category: &Category) -> i64 {
+    let mut depth = 1_i64;
+    let mut current = category.parent_id.clone();
+    while let Some(parent_id) = current {
+        let Some(parent) = index.get(&parent_id) else {
+            break;
+        };
+        depth += 1;
+        current = parent.parent_id.clone();
+        if depth > 64 {
+            break;
+        }
+    }
+    depth
 }
 
 /// 从 subject.json 取总集数；`eps` 缺失时退回 `total_episodes`。

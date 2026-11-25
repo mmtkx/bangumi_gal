@@ -3,6 +3,7 @@
 //! 依赖规则（plan.md 3.2）：本 crate 不依赖任何功能 crate，只被功能 crate 依赖。
 
 pub mod binding;
+pub mod category;
 pub mod db;
 pub mod error;
 pub mod events;
@@ -18,6 +19,7 @@ pub mod sync;
 pub mod time;
 
 pub use binding::{GameBindingRepository, SqliteGameBindingRepository};
+pub use category::{item_key, Category, CategoryRepository, MAX_CATEGORIES, MAX_CATEGORY_DEPTH};
 pub use db::Db;
 pub use error::{CoreError, Result};
 pub use events::{AppEvent, EventBus, EventEnvelope, Topic};

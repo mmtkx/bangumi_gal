@@ -15,7 +15,7 @@ members = [
 exclude = ["plugins"]
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 license = "MIT"
 rust-version = "1.95"
@@ -35,6 +35,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 # 系统通知：首次关窗隐藏到托盘时提示一次，避免用户以为程序卡死。
 tauri-plugin-notification = "2"
+# 系统文件/目录选择对话框：设置页选根目录要拿到真实路径，Web 的 input[type=file] 拿不到。
+tauri-plugin-dialog = "2"
 
 tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-build = { version = "2.7", features = [] }

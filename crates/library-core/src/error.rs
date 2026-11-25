@@ -32,6 +32,9 @@ pub enum CoreError {
     #[error("设置项无效：{0}")]
     InvalidSetting(String),
 
+    #[error("分类操作无效：{0}")]
+    InvalidCategory(String),
+
     #[error("条目不存在：{0}")]
     ItemNotFound(String),
 
@@ -69,6 +72,7 @@ impl CoreError {
             Self::ItemNotFound(_) => "item_not_found",
             Self::InvalidTopic(_) => "invalid_topic",
             Self::InvalidKind(_) => "invalid_kind",
+            Self::InvalidCategory(_) => "invalid_category",
             Self::InvalidSyncStatus(_) => "invalid_sync_status",
             Self::Regex(_) => "regex_error",
             Self::Serialize(_) | Self::Time(_) => "internal_error",

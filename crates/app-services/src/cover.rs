@@ -23,6 +23,34 @@ fn sniff_mime(bytes: &[u8]) -> &'static str {
     }
 }
 
+/// 极简 base64 解码：只为「用户选的封面图」服务，非法字符按失败处理。
+pub fn base64_decode(data: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(data.len() / 4 * 3);
+    let mut buffer: u32 = 0;
+    let mut bits = 0_u32;
+    for ch in data.bytes() {
+        if ch == b'=' || ch.is_ascii_whitespace() {
+            continue;
+        }
+        let value = match ch {
+            b'A'..=b'Z' => ch - b'A',
+            b'a'..=b'z' => ch - b'a' + 26,
+            b'0'..=b'9' => ch - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 /// 极简 base64 编码：只为封面服务，不引入额外依赖。
 fn base64_encode(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

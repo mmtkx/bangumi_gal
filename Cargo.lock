@@ -75,7 +75,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-services"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bangumi-sync",
  "chrono",
@@ -282,7 +282,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bangumi-sync"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "chrono",
  "fast2s",
@@ -2396,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "lagm-desktop"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "app-services",
  "chrono",
@@ -2404,6 +2404,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
@@ -2413,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "launcher"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "library-core",
  "serde",
@@ -2494,7 +2495,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "library-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "chrono",
  "rusqlite",
@@ -3226,7 +3227,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "player-adapter"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "library-core",
  "serde",
@@ -3252,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "plugin-host"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "library-core",
  "serde",
@@ -3701,6 +3702,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rfd"
+version = "0.17.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20dafead71c16a34e1ff357ddefc8afc11e7d51d6d2b9fbd07eaa48e3e540220"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "glib-sys",
+ "gobject-sys",
+ "gtk-sys",
+ "js-sys",
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "percent-encoding",
+ "raw-window-handle",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3869,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "scanner-anime"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "library-core",
  "regex",
@@ -3880,7 +3907,7 @@ dependencies = [
 
 [[package]]
 name = "scanner-game"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "library-core",
  "regex",
@@ -4688,6 +4715,48 @@ dependencies = [
  "serde_json",
  "tauri-utils",
  "walkdir",
+]
+
+[[package]]
+name = "tauri-plugin-dialog"
+version = "2.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce0fb9c2b6d34a9720627ed930ebc8af26f61e648695aecaeb03d5c33c5896f5"
+dependencies = [
+ "log",
+ "raw-window-handle",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "tauri-plugin-fs",
+ "thiserror 2.0.21",
+ "url",
+]
+
+[[package]]
+name = "tauri-plugin-fs"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d58eb1d4984e535f47a642ffec09a2da6f5c18a12b5902d12126cb7626d628b"
+dependencies = [
+ "anyhow",
+ "dunce",
+ "glob",
+ "log",
+ "objc2-foundation",
+ "percent-encoding",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "tauri",
+ "tauri-plugin",
+ "tauri-utils",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+ "url",
 ]
 
 [[package]]
